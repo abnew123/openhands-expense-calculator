@@ -1,0 +1,6 @@
+Transaction Date,Post Date,Description,Category,Type,Amount,Memo
+01/15/2024,01/16/2024,STARBUCKS STORE #12345,Food & Drink,Sale,-4.75,
+01/16/2024,01/17/2024,AMAZON.COM AMZN.COM/BILL,Shopping,Sale,-29.99,
+01/17/2024,01/18/2024,PAYMENT THANK YOU - WEB,Payment,Payment,150.00,
+01/18/2024,01/19/2024,UBER EATS,Food & Drink,Sale,-12.50,
+01/20/2024,01/21/2024,TARGET STORE T-1234,Shopping,Sale,-45.67,

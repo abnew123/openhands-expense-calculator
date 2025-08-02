@@ -37,22 +37,30 @@ Build a local-first personal finance web application that runs offline, allowing
 - Requirements.txt with pinned versions of dependencies
 
 ## Repository Structure
-expense-tracker/
+openhands-expense-calculator/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py              # entry point
-│   ├── db.py                # sqlite helpers
-│   ├── models.py            # define transaction object
-│   ├── views.py             # streamlit/flask UI
-│   └── static/              # CSS/images
+│   ├── __init__.py           # Package initialization ✅
+│   ├── main.py              # Application entry point with logging ✅
+│   ├── db.py                # DatabaseManager with SQLite operations ✅
+│   ├── models.py            # Transaction dataclass with validation ✅
+│   ├── csv_parser.py        # Chase CSV parsing with validation ✅
+│   └── views.py             # Streamlit UI components and pages ✅
 ├── tests/
-│   └── test_placeholder.py
-├── spec.md
-├── requirements.txt
-├── Dockerfile
-├── README.md
-├── llm_notes/
-│   ├── progress              # stores current state
-│   ├── thinking              # stores thoughts
-│   ├── tickets               # stores goals
-├── supported_formats/        # one file per supported format
+│   ├── __init__.py
+│   └── placeholder_test.py  # Test framework setup
+├── llm_notes/              # Development documentation ✅
+│   ├── progress/           # PM-style progress updates (6 completed)
+│   ├── thinking/           # Developer internal notes
+│   └── tickets/            # Jira-style task breakdown (13 tickets)
+├── supported_formats/
+│   └── chase_download.csv   # Sample Chase CSV format ✅
+├── spec.md                 # This specification file
+├── requirements.txt        # Pinned dependencies ✅
+├── run_app.py             # Streamlit runner script ✅
+├── Dockerfile             # Container setup (placeholder)
+├── README.md              # Project documentation
+├── HANDOFF.md             # Project handoff documentation ✅
+├── expenses.db            # SQLite database (auto-created) ✅
+├── expense_tracker.log    # Application logs (auto-created) ✅
+├── sample_chase_upload.csv # Test CSV file ✅
+└── new_transactions.csv   # Additional test data ✅
