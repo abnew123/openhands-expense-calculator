@@ -58,7 +58,7 @@ openhands-expense-calculator/
 ├── requirements.txt        # Pinned dependencies ✅
 ├── run_app.py             # Streamlit runner script ✅
 ├── Dockerfile             # Container setup (placeholder)
-├── README.md              # Project documentation
+├── README.md              # User-friendly setup and usage guide ✅
 ├── HANDOFF.md             # Project handoff documentation ✅
 ├── expenses.db            # SQLite database (auto-created) ✅
 ├── expense_tracker.log    # Application logs (auto-created) ✅
