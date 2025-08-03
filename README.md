@@ -4,25 +4,16 @@ A simple, local expense tracking application that helps you manage and visualize
 
 ## 🚀 Quick Start
 
-### What You Need
-- A computer with Python installed (Windows, Mac, or Linux)
-- Your Chase credit card CSV file (downloaded from Chase online banking)
+**New to the application?** Check out our [Quick Start Guide](QUICK_START.md) for step-by-step instructions to get up and running in minutes!
 
-### Step 1: Download the Application
-1. Click the green "Code" button above and select "Download ZIP"
-2. Extract the ZIP file to a folder on your computer
-3. Open a terminal/command prompt and navigate to the folder
+For experienced users, here's the quick setup:
 
-### Step 2: Install Required Software
 ```bash
 # Install the required packages
 pip install -r requirements.txt
-```
 
-### Step 3: Run the Application
-```bash
 # Start the expense tracker
-python run_app.py
+streamlit run run_app.py
 ```
 
 The application will start and automatically open in your web browser at `http://localhost:8501`
@@ -142,10 +133,9 @@ The CSV file should have these columns:
 ## 🛠️ Advanced Usage
 
 ### Running on a Different Port
-Edit `run_app.py` and change the port number:
-```python
-if __name__ == "__main__":
-    main(port=8502)  # Change to your preferred port
+Start the application with a different port:
+```bash
+streamlit run run_app.py --server.port 8502
 ```
 
 ### Accessing from Other Devices
