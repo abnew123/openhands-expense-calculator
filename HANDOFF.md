@@ -37,8 +37,6 @@ cd openhands-expense-calculator
 pip install -r requirements.txt
 
 # Run the application
-python run_app.py
-# OR
 streamlit run run_app.py
 
 # Access at: http://localhost:8501

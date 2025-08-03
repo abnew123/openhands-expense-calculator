@@ -1,5 +1,43 @@
 # 🚀 Quick Start Guide - No Coding Experience Required!
 
+## ⚠️ Important Notes
+
+- **Windows Users**: These instructions have been tested on Mac/Linux. Windows users may need to adjust some commands.
+- **Virtual Environment**: We recommend using a virtual environment to avoid package conflicts.
+
+## For Mac Users
+
+### 1. Install Python (if not already installed)
+1. Open Terminal (Applications → Utilities → Terminal)
+2. Install Homebrew: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
+3. Install Python: `brew install python`
+
+### 2. Download and Setup
+1. Download ZIP from GitHub (green "Code" button)
+2. Extract to your Desktop
+3. Open Terminal and navigate:
+   ```bash
+   cd ~/Desktop/openhands-expense-calculator
+   ```
+
+### 3. Create Virtual Environment (Recommended)
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate the virtual environment
+source venv/bin/activate
+```
+
+### 4. Install and Run
+```bash
+# Install required packages
+pip install -r requirements.txt
+
+# Start the expense tracker  
+streamlit run run_app.py
+```
+
 ## For Windows Users
 
 ### 1. Install Python
@@ -18,40 +56,25 @@
 2. Type `cmd` and press Enter
 3. Navigate to your extracted folder:
    ```
-   cd Desktop\openhands-expense-calculator-main
+   cd Desktop\openhands-expense-calculator
    ```
 
-### 4. Install and Run
+### 4. Create Virtual Environment (Recommended)
+```bash
+# Create a virtual environment
+python -m venv venv
+
+# Activate the virtual environment
+venv\Scripts\activate
+```
+
+### 5. Install and Run
 ```bash
 # Install required packages (one-time setup)
 pip install -r requirements.txt
 
 # Start the expense tracker
-python run_app.py
-```
-
-## For Mac Users
-
-### 1. Install Python (if not already installed)
-1. Open Terminal (Applications → Utilities → Terminal)
-2. Install Homebrew: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
-3. Install Python: `brew install python`
-
-### 2. Download and Setup
-1. Download ZIP from GitHub (green "Code" button)
-2. Extract to your Desktop
-3. Open Terminal and navigate:
-   ```bash
-   cd ~/Desktop/openhands-expense-calculator-main
-   ```
-
-### 3. Install and Run
-```bash
-# Install required packages
-pip3 install -r requirements.txt
-
-# Start the expense tracker  
-python3 run_app.py
+streamlit run run_app.py
 ```
 
 ## What Happens Next?
@@ -83,6 +106,7 @@ python3 run_app.py
 
 - **Can't find Terminal/Command Prompt?** Search for "cmd" on Windows or "Terminal" on Mac
 - **Python not found?** Make sure you checked "Add to PATH" during Python installation
+- **Package conflicts?** Try using a virtual environment (see steps above)
 - **Still stuck?** Check the main README.md file for more detailed troubleshooting
 
 ## 🎉 You're Ready!
