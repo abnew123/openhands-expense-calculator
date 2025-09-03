@@ -552,6 +552,36 @@ class ExpenseTrackerUI:
         if len(transactions) > 500:
             st.info(f"⚡ Large dataset detected ({len(transactions)} transactions). Using optimized display.")
         
+        # Transaction management controls
+        st.subheader("🛠️ Transaction Management")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("🗑️ Delete Selected", key="delete_selected", help="Delete selected transactions"):
+                if 'selected_transactions' in st.session_state and st.session_state.selected_transactions:
+                    self._delete_selected_transactions()
+                else:
+                    st.warning("No transactions selected")
+        
+        with col2:
+            if st.button("📝 Edit Selected", key="edit_selected", help="Edit selected transactions"):
+                if 'selected_transactions' in st.session_state and st.session_state.selected_transactions:
+                    st.session_state.show_edit_modal = True
+                else:
+                    st.warning("No transactions selected")
+        
+        with col3:
+            if st.button("🔄 Reset All Data", key="reset_all", help="Delete ALL transactions"):
+                st.session_state.show_reset_confirmation = True
+        
+        with col4:
+            if st.button("🔍 Advanced Search", key="advanced_search", help="Advanced search and filtering"):
+                st.session_state.show_advanced_search = True
+        
+        # Show modals
+        self._show_transaction_modals()
+        
         # Search functionality
         col1, col2, col3 = st.columns([2, 1, 1])
         
@@ -1195,7 +1225,6 @@ class ExpenseTrackerUI:
                 values=[item[1] for item in sorted_categories],
                 names=[item[0] for item in sorted_categories],
                 title="Spending Distribution by Category",
-                hover_data={'values': ':$.2f'},
                 color_discrete_sequence=px.colors.qualitative.Set3
             )
             fig_pie.update_traces(
@@ -1704,17 +1733,27 @@ class ExpenseTrackerUI:
             st.write("**🔄 Create Full Backup**")
             st.write("Create a complete backup of all your data including transactions, categories, and statistics.")
             
+            backup_type = st.radio(
+                "Backup Type",
+                ["JSON Export", "Database File"],
+                key="backup_type"
+            )
+            
             if st.button("📦 Create Full Backup", type="primary", key="create_backup"):
                 try:
-                    # Create comprehensive backup
-                    backup_data = exporter.export_to_json(pretty=True)
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    filename = f"expense_tracker_backup_{timestamp}.json"
-                    
-                    st.session_state.backup_content = backup_data
-                    st.session_state.backup_filename = filename
-                    
-                    st.success("Backup created successfully!")
+                    if backup_type == "JSON Export":
+                        # Create comprehensive backup
+                        backup_data = exporter.export_to_json(pretty=True)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        filename = f"expense_tracker_backup_{timestamp}.json"
+                        
+                        st.session_state.backup_content = backup_data
+                        st.session_state.backup_filename = filename
+                        
+                        st.success("JSON backup created successfully!")
+                    else:
+                        # Create database file backup
+                        self._create_database_backup(f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
                     
                 except Exception as e:
                     st.error(f"Backup creation failed: {e}")
@@ -1732,38 +1771,58 @@ class ExpenseTrackerUI:
             st.write("**📂 Restore from Backup**")
             st.write("Restore data from a previous backup file.")
             
-            backup_file = st.file_uploader(
-                "Choose backup file",
-                type=['json'],
-                help="Upload a backup JSON file",
-                key="restore_file"
+            restore_type = st.radio(
+                "Restore Type",
+                ["JSON Backup", "Database File"],
+                key="restore_type"
             )
             
+            if restore_type == "JSON Backup":
+                backup_file = st.file_uploader(
+                    "Choose JSON backup file",
+                    type=['json'],
+                    help="Upload a backup JSON file",
+                    key="restore_json_file"
+                )
+            else:
+                backup_file = st.file_uploader(
+                    "Choose database backup file",
+                    type=['db', 'sqlite', 'sqlite3'],
+                    help="Upload a database backup file",
+                    key="restore_db_file"
+                )
+            
             if backup_file is not None:
-                try:
-                    backup_content = backup_file.read().decode('utf-8')
-                    validation = importer.validate_json_import(backup_content)
-                    
-                    if validation['valid']:
-                        st.success(f"✅ Valid backup with {validation['total_transactions']} transactions")
+                if restore_type == "JSON Backup":
+                    try:
+                        backup_content = backup_file.read().decode('utf-8')
+                        validation = importer.validate_json_import(backup_content)
                         
-                        st.warning("⚠️ This will add transactions to your existing data. Duplicates will be skipped.")
-                        
-                        if st.button("🔄 Restore from Backup", key="restore_backup"):
-                            try:
-                                result = importer.import_from_json(backup_content)
-                                st.success(f"Restored {result['imported']} transactions!")
-                                
-                                if st.button("🔄 Refresh Page", key="refresh_after_restore"):
-                                    st.rerun()
+                        if validation['valid']:
+                            st.success(f"✅ Valid backup with {validation['total_transactions']} transactions")
+                            
+                            st.warning("⚠️ This will add transactions to your existing data. Duplicates will be skipped.")
+                            
+                            if st.button("🔄 Restore from JSON Backup", key="restore_json_backup"):
+                                try:
+                                    result = importer.import_from_json(backup_content)
+                                    st.success(f"Restored {result['imported']} transactions!")
                                     
-                            except Exception as e:
-                                st.error(f"Restore failed: {e}")
-                    else:
-                        st.error("❌ Invalid backup file")
-                        
-                except Exception as e:
-                    st.error(f"Failed to read backup file: {e}")
+                                    if st.button("🔄 Refresh Page", key="refresh_after_json_restore"):
+                                        st.rerun()
+                                        
+                                except Exception as e:
+                                    st.error(f"JSON restore failed: {e}")
+                        else:
+                            st.error("❌ Invalid JSON backup file")
+                    except Exception as e:
+                        st.error(f"Failed to process JSON backup: {e}")
+                else:
+                    # Database file restore
+                    st.warning("⚠️ This will REPLACE ALL current data!")
+                    
+                    if st.button("🔄 Restore Database", key="restore_db_backup", type="primary"):
+                        self._restore_database_backup(backup_file)
         
         # Database statistics
         st.subheader("📈 Database Statistics")
@@ -2039,4 +2098,356 @@ class ExpenseTrackerUI:
         except Exception as e:
             progress.error(str(e))
             error_handler.handle_database_error(e, "bulk category update")
+    
+    def _show_transaction_modals(self):
+        """Show transaction management modals."""
+        # Reset confirmation modal
+        if st.session_state.get('show_reset_confirmation', False):
+            with st.container():
+                st.error("⚠️ **DANGER ZONE** ⚠️")
+                st.write("This will permanently delete ALL transactions. This action cannot be undone.")
+                
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
+                    if st.button("❌ Cancel", key="cancel_reset"):
+                        st.session_state.show_reset_confirmation = False
+                        st.experimental_rerun()
+                
+                with col2:
+                    confirm_text = st.text_input("Type 'DELETE ALL' to confirm:", key="reset_confirm_text")
+                
+                with col3:
+                    if st.button("🗑️ DELETE ALL", key="confirm_reset", type="primary"):
+                        if confirm_text == "DELETE ALL":
+                            deleted_count = self.db.delete_all_transactions()
+                            st.success(f"✅ Deleted {deleted_count} transactions")
+                            st.session_state.show_reset_confirmation = False
+                            self._load_data()
+                            st.experimental_rerun()
+                        else:
+                            st.error("Please type 'DELETE ALL' to confirm")
+        
+        # Edit modal
+        if st.session_state.get('show_edit_modal', False):
+            self._show_edit_transactions_modal()
+        
+        # Advanced search modal
+        if st.session_state.get('show_advanced_search', False):
+            self._show_advanced_search_modal()
+    
+    def _show_edit_transactions_modal(self):
+        """Show modal for editing selected transactions."""
+        with st.container():
+            st.subheader("📝 Edit Selected Transactions")
+            
+            selected_ids = st.session_state.get('selected_transactions', [])
+            st.write(f"Editing {len(selected_ids)} transactions")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Category update
+                new_category = st.selectbox(
+                    "Update Category",
+                    [""] + st.session_state.categories,
+                    key="edit_category"
+                )
+                
+                # Description pattern replacement
+                find_text = st.text_input("Find in Description", key="edit_find")
+                replace_text = st.text_input("Replace with", key="edit_replace")
+            
+            with col2:
+                # Amount adjustment
+                amount_adjustment = st.number_input(
+                    "Amount Adjustment ($)",
+                    value=0.0,
+                    help="Add/subtract from current amount",
+                    key="edit_amount_adj"
+                )
+                
+                # Date adjustment
+                date_adjustment = st.number_input(
+                    "Date Adjustment (days)",
+                    value=0,
+                    help="Add/subtract days from current date",
+                    key="edit_date_adj"
+                )
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("❌ Cancel", key="cancel_edit"):
+                    st.session_state.show_edit_modal = False
+                    st.experimental_rerun()
+            
+            with col2:
+                if st.button("👁️ Preview Changes", key="preview_edit"):
+                    self._preview_transaction_edits(selected_ids, new_category, find_text, replace_text, amount_adjustment, date_adjustment)
+            
+            with col3:
+                if st.button("✅ Apply Changes", key="apply_edit", type="primary"):
+                    self._apply_transaction_edits(selected_ids, new_category, find_text, replace_text, amount_adjustment, date_adjustment)
+    
+    def _show_advanced_search_modal(self):
+        """Show advanced search and filtering modal."""
+        with st.container():
+            st.subheader("🔍 Advanced Search & Filter")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Text search with regex
+                description_pattern = st.text_input(
+                    "Description Pattern (supports regex)",
+                    help="Use regex patterns like 'AMAZON.*' or simple text",
+                    key="adv_description"
+                )
+                
+                # Amount range
+                amount_min = st.number_input("Minimum Amount ($)", value=None, key="adv_amount_min")
+                amount_max = st.number_input("Maximum Amount ($)", value=None, key="adv_amount_max")
+            
+            with col2:
+                # Date range
+                if st.session_state.transactions:
+                    min_date = min(t.transaction_date for t in st.session_state.transactions).date()
+                    max_date = max(t.transaction_date for t in st.session_state.transactions).date()
+                    
+                    date_range = st.date_input(
+                        "Date Range",
+                        value=(min_date, max_date),
+                        min_value=min_date,
+                        max_value=max_date,
+                        key="adv_date_range"
+                    )
+                
+                # Category selection
+                selected_categories = st.multiselect(
+                    "Categories",
+                    st.session_state.categories,
+                    key="adv_categories"
+                )
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("❌ Cancel", key="cancel_advanced_search"):
+                    st.session_state.show_advanced_search = False
+                    st.experimental_rerun()
+            
+            with col2:
+                if st.button("🔍 Search", key="execute_advanced_search"):
+                    self._execute_advanced_search(description_pattern, amount_min, amount_max, date_range, selected_categories)
+            
+            with col3:
+                if st.button("🗑️ Delete Matching", key="delete_matching", type="primary"):
+                    self._delete_matching_transactions(description_pattern, amount_min, amount_max, date_range, selected_categories)
+    
+    def _delete_selected_transactions(self):
+        """Delete selected transactions."""
+        selected_ids = st.session_state.get('selected_transactions', [])
+        if selected_ids:
+            deleted_count = self.db.delete_transactions_batch(selected_ids)
+            st.success(f"✅ Deleted {deleted_count} transactions")
+            st.session_state.selected_transactions = []
+            self._load_data()
+            st.experimental_rerun()
+    
+    def _apply_transaction_edits(self, transaction_ids, new_category, find_text, replace_text, amount_adjustment, date_adjustment):
+        """Apply edits to selected transactions."""
+        updates = {}
+        updated_count = 0
+        
+        # Category update
+        if new_category:
+            updated_count += self.db.update_transactions_batch(transaction_ids, category=new_category)
+        
+        # Description replacement
+        if find_text and replace_text:
+            for tid in transaction_ids:
+                # Get current transaction
+                transactions = [t for t in st.session_state.transactions if t.id == tid]
+                if transactions:
+                    t = transactions[0]
+                    new_description = t.description.replace(find_text, replace_text)
+                    if new_description != t.description:
+                        self.db.update_transaction(tid, description=new_description)
+                        updated_count += 1
+        
+        # Amount adjustment
+        if amount_adjustment != 0:
+            for tid in transaction_ids:
+                transactions = [t for t in st.session_state.transactions if t.id == tid]
+                if transactions:
+                    t = transactions[0]
+                    new_amount = float(t.amount) + amount_adjustment
+                    self.db.update_transaction(tid, amount=new_amount)
+                    updated_count += 1
+        
+        # Date adjustment
+        if date_adjustment != 0:
+            for tid in transaction_ids:
+                transactions = [t for t in st.session_state.transactions if t.id == tid]
+                if transactions:
+                    t = transactions[0]
+                    new_date = t.transaction_date + timedelta(days=date_adjustment)
+                    self.db.update_transaction(tid, transaction_date=new_date, post_date=new_date)
+                    updated_count += 1
+        
+        st.success(f"✅ Updated {len(transaction_ids)} transactions")
+        st.session_state.show_edit_modal = False
+        self._load_data()
+        st.experimental_rerun()
+    
+    def _preview_transaction_edits(self, transaction_ids, new_category, find_text, replace_text, amount_adjustment, date_adjustment):
+        """Preview changes before applying."""
+        st.write("**Preview of Changes:**")
+        
+        preview_data = []
+        for tid in transaction_ids[:5]:  # Show first 5 as preview
+            transactions = [t for t in st.session_state.transactions if t.id == tid]
+            if transactions:
+                t = transactions[0]
+                
+                # Calculate changes
+                new_desc = t.description.replace(find_text, replace_text) if find_text and replace_text else t.description
+                new_cat = new_category if new_category else t.category
+                new_amt = float(t.amount) + amount_adjustment if amount_adjustment != 0 else float(t.amount)
+                new_date = t.transaction_date + timedelta(days=date_adjustment) if date_adjustment != 0 else t.transaction_date
+                
+                preview_data.append({
+                    'ID': tid,
+                    'Old Description': t.description[:30] + "..." if len(t.description) > 30 else t.description,
+                    'New Description': new_desc[:30] + "..." if len(new_desc) > 30 else new_desc,
+                    'Old Category': t.category,
+                    'New Category': new_cat,
+                    'Old Amount': f"${t.amount:.2f}",
+                    'New Amount': f"${new_amt:.2f}",
+                    'Old Date': t.transaction_date.strftime('%Y-%m-%d'),
+                    'New Date': new_date.strftime('%Y-%m-%d')
+                })
+        
+        if preview_data:
+            preview_df = pd.DataFrame(preview_data)
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+            
+            if len(transaction_ids) > 5:
+                st.info(f"Showing preview for first 5 transactions. {len(transaction_ids) - 5} more will be updated.")
+    
+    def _execute_advanced_search(self, description_pattern, amount_min, amount_max, date_range, selected_categories):
+        """Execute advanced search and show results."""
+        # This would filter the current view - implementation depends on how you want to handle it
+        st.info("Advanced search executed - results would be shown in the main transaction table")
+        st.session_state.show_advanced_search = False
+        st.experimental_rerun()
+    
+    def _delete_matching_transactions(self, description_pattern, amount_min, amount_max, date_range, selected_categories):
+        """Delete transactions matching advanced search criteria."""
+        # Convert date_range to datetime objects
+        start_date = None
+        end_date = None
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date = datetime.combine(date_range[0], datetime.min.time())
+            end_date = datetime.combine(date_range[1], datetime.max.time())
+        
+        # Use the database method to delete by criteria
+        deleted_count = self.db.delete_transactions_by_criteria(
+            description_pattern=description_pattern if description_pattern else None,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            start_date=start_date,
+            end_date=end_date,
+            category=selected_categories[0] if selected_categories and len(selected_categories) == 1 else None
+        )
+        
+        st.success(f"✅ Deleted {deleted_count} matching transactions")
+        st.session_state.show_advanced_search = False
+        self._load_data()
+        st.experimental_rerun()
+    
+    def _create_database_backup(self, backup_name: str):
+        """Create a backup of the current database."""
+        try:
+            import shutil
+            import os
+            from pathlib import Path
+            
+            # Create backups directory
+            backup_dir = Path("data/backups")
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create backup filename
+            backup_filename = f"{backup_name}.db"
+            backup_path = backup_dir / backup_filename
+            
+            # Copy database file
+            shutil.copy2(self.db.db_path, backup_path)
+            
+            # Create download link
+            with open(backup_path, 'rb') as f:
+                backup_data = f.read()
+            
+            st.success(f"✅ Database backup created successfully!")
+            st.download_button(
+                label="📥 Download Database Backup",
+                data=backup_data,
+                file_name=backup_filename,
+                mime="application/octet-stream",
+                key="download_db_backup"
+            )
+            
+            # Show backup info
+            backup_size = len(backup_data) / (1024 * 1024)  # MB
+            st.info(f"Database backup size: {backup_size:.2f} MB")
+            
+        except Exception as e:
+            st.error(f"❌ Failed to create database backup: {e}")
+            self.logger.error(f"Database backup creation failed: {e}")
+    
+    def _restore_database_backup(self, uploaded_backup):
+        """Restore database from uploaded backup."""
+        try:
+            import tempfile
+            import shutil
+            
+            # Save uploaded file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp_file:
+                tmp_file.write(uploaded_backup.read())
+                tmp_path = tmp_file.name
+            
+            # Validate the backup file (basic SQLite check)
+            try:
+                import sqlite3
+                with sqlite3.connect(tmp_path) as conn:
+                    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'")
+                    if not cursor.fetchone():
+                        st.error("❌ Invalid backup file: missing transactions table")
+                        return
+            except sqlite3.Error as e:
+                st.error(f"❌ Invalid backup file: {e}")
+                return
+            
+            # Create backup of current database before restore
+            current_backup_name = f"pre_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self._create_database_backup(current_backup_name)
+            
+            # Replace current database
+            shutil.copy2(tmp_path, self.db.db_path)
+            
+            # Clean up temporary file
+            import os
+            os.unlink(tmp_path)
+            
+            st.success("✅ Database restored successfully!")
+            st.info("Your previous database was backed up before restoration.")
+            
+            # Reload data
+            self._load_data()
+            st.experimental_rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Failed to restore backup: {e}")
+            self.logger.error(f"Backup restoration failed: {e}")
             return False

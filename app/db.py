@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.models import Transaction
@@ -212,6 +212,93 @@ class DatabaseManager:
             self.logger.error(f"Failed to update transaction category: {e}")
             raise
     
+    def update_transaction(self, transaction_id: int, **updates) -> bool:
+        """Update multiple fields of a specific transaction."""
+        if not updates:
+            return False
+        
+        try:
+            # Build dynamic update query
+            set_clauses = []
+            params = []
+            
+            allowed_fields = ['description', 'category', 'transaction_type', 'amount', 'memo', 'transaction_date', 'post_date']
+            
+            for field, value in updates.items():
+                if field in allowed_fields:
+                    set_clauses.append(f"{field} = ?")
+                    if field in ['transaction_date', 'post_date'] and isinstance(value, datetime):
+                        params.append(value.isoformat())
+                    elif field == 'amount':
+                        params.append(float(value))
+                    else:
+                        params.append(value)
+            
+            if not set_clauses:
+                self.logger.warning("No valid fields to update")
+                return False
+            
+            set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(transaction_id)
+            
+            query = f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id = ?"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(query, params)
+                
+                if cursor.rowcount == 0:
+                    self.logger.warning(f"No transaction found with ID {transaction_id}")
+                    return False
+                
+                conn.commit()
+                self.logger.info(f"Updated transaction {transaction_id} with fields: {list(updates.keys())}")
+                return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to update transaction: {e}")
+            raise
+    
+    def update_transactions_batch(self, transaction_ids: List[int], **updates) -> int:
+        """Update multiple transactions with the same values. Returns number of updated transactions."""
+        if not transaction_ids or not updates:
+            return 0
+        
+        try:
+            # Build dynamic update query
+            set_clauses = []
+            params = []
+            
+            allowed_fields = ['description', 'category', 'transaction_type', 'amount', 'memo', 'transaction_date', 'post_date']
+            
+            for field, value in updates.items():
+                if field in allowed_fields:
+                    set_clauses.append(f"{field} = ?")
+                    if field in ['transaction_date', 'post_date'] and isinstance(value, datetime):
+                        params.append(value.isoformat())
+                    elif field == 'amount':
+                        params.append(float(value))
+                    else:
+                        params.append(value)
+            
+            if not set_clauses:
+                self.logger.warning("No valid fields to update")
+                return 0
+            
+            set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+            params.extend(transaction_ids)
+            
+            placeholders = ','.join(['?' for _ in transaction_ids])
+            query = f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id IN ({placeholders})"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(query, params)
+                updated_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Updated {updated_count} transactions with fields: {list(updates.keys())}")
+                return updated_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to update transactions batch: {e}")
+            raise
+    
     def delete_transaction(self, transaction_id: int) -> bool:
         """Delete a specific transaction."""
         try:
@@ -227,6 +314,87 @@ class DatabaseManager:
                 return True
         except sqlite3.Error as e:
             self.logger.error(f"Failed to delete transaction: {e}")
+            raise
+    
+    def delete_transactions_batch(self, transaction_ids: List[int]) -> int:
+        """Delete multiple transactions in a batch operation. Returns number of deleted transactions."""
+        if not transaction_ids:
+            return 0
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                placeholders = ','.join(['?' for _ in transaction_ids])
+                cursor = conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", transaction_ids)
+                
+                deleted_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Deleted {deleted_count} transactions")
+                return deleted_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to delete transactions batch: {e}")
+            raise
+    
+    def delete_all_transactions(self) -> int:
+        """Delete all transactions. Returns number of deleted transactions."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM transactions")
+                deleted_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Deleted all {deleted_count} transactions")
+                return deleted_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to delete all transactions: {e}")
+            raise
+    
+    def delete_transactions_by_criteria(self, description_pattern: str = None, 
+                                      amount_min: float = None, amount_max: float = None,
+                                      start_date: datetime = None, end_date: datetime = None,
+                                      category: str = None) -> int:
+        """Delete transactions matching specific criteria. Returns number of deleted transactions."""
+        try:
+            conditions = []
+            params = []
+            
+            if description_pattern:
+                conditions.append("description LIKE ?")
+                params.append(f"%{description_pattern}%")
+            
+            if amount_min is not None:
+                conditions.append("amount >= ?")
+                params.append(amount_min)
+            
+            if amount_max is not None:
+                conditions.append("amount <= ?")
+                params.append(amount_max)
+            
+            if start_date:
+                conditions.append("transaction_date >= ?")
+                params.append(start_date.isoformat())
+            
+            if end_date:
+                conditions.append("transaction_date <= ?")
+                params.append(end_date.isoformat())
+            
+            if category:
+                conditions.append("category = ?")
+                params.append(category)
+            
+            if not conditions:
+                self.logger.warning("No criteria provided for deletion")
+                return 0
+            
+            where_clause = " AND ".join(conditions)
+            query = f"DELETE FROM transactions WHERE {where_clause}"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(query, params)
+                deleted_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Deleted {deleted_count} transactions matching criteria")
+                return deleted_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to delete transactions by criteria: {e}")
             raise
     
     def get_categories(self) -> List[str]:
@@ -259,6 +427,7 @@ class DatabaseManager:
         """Check if a transaction already exists (duplicate detection)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # Primary check: exact match on key fields
                 cursor = conn.execute("""
                     SELECT COUNT(*) FROM transactions 
                     WHERE transaction_date = ? AND post_date = ? 
@@ -270,9 +439,58 @@ class DatabaseManager:
                     float(transaction.amount)
                 ))
                 count = cursor.fetchone()[0]
-                return count > 0
+                
+                if count > 0:
+                    return True
+                
+                # Secondary check: fuzzy match for potential duplicates
+                # Check for same date and amount with similar description
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM transactions 
+                    WHERE transaction_date = ? AND amount = ?
+                    AND (description = ? OR LOWER(description) = LOWER(?))
+                """, (
+                    transaction.transaction_date.isoformat(),
+                    float(transaction.amount),
+                    transaction.description,
+                    transaction.description
+                ))
+                fuzzy_count = cursor.fetchone()[0]
+                
+                return fuzzy_count > 0
         except sqlite3.Error as e:
             self.logger.error(f"Failed to check transaction existence: {e}")
+            raise
+    
+    def find_potential_duplicates(self, transaction: Transaction, tolerance_days: int = 1) -> List[Transaction]:
+        """Find potential duplicate transactions within a date tolerance."""
+        try:
+            start_date = (transaction.transaction_date - timedelta(days=tolerance_days)).isoformat()
+            end_date = (transaction.transaction_date + timedelta(days=tolerance_days)).isoformat()
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM transactions 
+                    WHERE transaction_date BETWEEN ? AND ?
+                    AND amount = ?
+                    AND (description = ? OR LOWER(description) = LOWER(?))
+                """, (
+                    start_date, end_date,
+                    float(transaction.amount),
+                    transaction.description,
+                    transaction.description
+                ))
+                rows = cursor.fetchall()
+                
+                duplicates = []
+                for row in rows:
+                    duplicate = Transaction.from_dict(dict(row))
+                    duplicates.append(duplicate)
+                
+                return duplicates
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to find potential duplicates: {e}")
             raise
     
     def rename_category(self, old_category: str, new_category: str) -> int:

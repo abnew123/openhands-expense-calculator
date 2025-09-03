@@ -57,6 +57,34 @@ class CSVParser:
                     'memo': None
                 },
                 'date_format': '%m/%d/%Y'
+            },
+            'american_express': {
+                'name': 'American Express',
+                'required_columns': ['Date', 'Description', 'Amount'],
+                'column_mapping': {
+                    'transaction_date': 'Date',
+                    'post_date': 'Date',  # Use same date for both
+                    'description': 'Description',
+                    'category': None,  # Will be set to 'Uncategorized'
+                    'transaction_type': None,  # Will be determined from amount
+                    'amount': 'Amount',
+                    'memo': None
+                },
+                'date_format': '%m/%d/%Y'
+            },
+            'capital_one': {
+                'name': 'Capital One',
+                'required_columns': ['Transaction Date', 'Posted Date', 'Card No.', 'Description', 'Category', 'Debit', 'Credit'],
+                'column_mapping': {
+                    'transaction_date': 'Transaction Date',
+                    'post_date': 'Posted Date',
+                    'description': 'Description',
+                    'category': 'Category',
+                    'transaction_type': None,  # Will be determined from debit/credit
+                    'amount': None,  # Special handling for debit/credit columns
+                    'memo': None
+                },
+                'date_format': '%Y-%m-%d'
             }
         }
     
@@ -282,20 +310,36 @@ class CSVParser:
                     else:
                         post_date = transaction_date  # Use transaction date as post date
                     
-                    # Parse amount
-                    amount_value = row[column_mapping['amount']]
-                    if pd.isna(amount_value):
-                        continue
-                    
-                    try:
-                        # Handle different amount formats
-                        amount_str = str(amount_value).strip()
-                        # Remove currency symbols and commas
-                        amount_str = amount_str.replace('$', '').replace(',', '')
-                        amount = Decimal(amount_str)
-                    except (ValueError, TypeError):
-                        self.logger.warning(f"Invalid amount in row {index + 1}: {amount_value}")
-                        continue
+                    # Parse amount - handle special cases like Capital One debit/credit columns
+                    if format_type == 'capital_one':
+                        # Capital One has separate Debit and Credit columns
+                        debit_value = row.get('Debit', 0) or 0
+                        credit_value = row.get('Credit', 0) or 0
+                        
+                        try:
+                            debit_amount = Decimal(str(debit_value).replace('$', '').replace(',', '')) if debit_value else Decimal('0')
+                            credit_amount = Decimal(str(credit_value).replace('$', '').replace(',', '')) if credit_value else Decimal('0')
+                            
+                            # Debit is negative (expense), Credit is positive (payment/refund)
+                            amount = credit_amount - debit_amount
+                        except (ValueError, TypeError):
+                            self.logger.warning(f"Invalid debit/credit amounts in row {index + 1}: debit={debit_value}, credit={credit_value}")
+                            continue
+                    else:
+                        # Standard amount column handling
+                        amount_value = row[column_mapping['amount']]
+                        if pd.isna(amount_value):
+                            continue
+                        
+                        try:
+                            # Handle different amount formats
+                            amount_str = str(amount_value).strip()
+                            # Remove currency symbols and commas
+                            amount_str = amount_str.replace('$', '').replace(',', '')
+                            amount = Decimal(amount_str)
+                        except (ValueError, TypeError):
+                            self.logger.warning(f"Invalid amount in row {index + 1}: {amount_value}")
+                            continue
                     
                     # Get description
                     description = str(row[column_mapping['description']]).strip()
