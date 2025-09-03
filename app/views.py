@@ -13,6 +13,7 @@ from app.models import Transaction
 from app.export_import import DataExporter, DataImporter, create_download_link
 from app.performance import perf_monitor, StreamlitCache, show_performance_metrics, optimize_large_dataset_display, show_pagination_controls, optimize_chart_data
 from app.error_handling import error_handler, safe_operation, ProgressTracker, show_success_message, show_warning_message, validate_user_input
+from app.version import __version__
 
 
 class ExpenseTrackerUI:
@@ -33,8 +34,12 @@ class ExpenseTrackerUI:
     
     def run(self):
         """Main application entry point."""
-        st.title("💰 Personal Expense Tracker")
-        st.markdown("Track and categorize your credit card transactions locally and offline.")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.title("💰 Personal Expense Tracker")
+            st.markdown("Track and categorize your credit card transactions locally and offline.")
+        with col2:
+            st.markdown(f"<div style='text-align: right; padding-top: 20px; color: #666;'>v{__version__}</div>", unsafe_allow_html=True)
         
         # Sidebar navigation
         pages = ["📊 Dashboard", "📁 Upload CSV", "📋 Transactions", "📈 Analytics", "🏷️ Categories", "💾 Data Management"]
@@ -205,9 +210,14 @@ class ExpenseTrackerUI:
         supported_formats = self.csv_parser.get_supported_formats()
         for format_name, format_info in supported_formats.items():
             with st.expander(f"📋 {format_info['name']} Format"):
-                st.write("**Required columns:**")
-                for col in format_info['required_columns']:
-                    st.write(f"• {col}")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write("**Required columns:**")
+                    for col in format_info['required_columns']:
+                        st.write(f"• {col}")
+                with col2:
+                    if 'website' in format_info:
+                        st.markdown(f"[🌐 Download CSV]({format_info['website']})", unsafe_allow_html=True)
         
         # Format selection
         col1, col2 = st.columns([2, 1])
@@ -249,9 +259,14 @@ class ExpenseTrackerUI:
                         st.info("**Supported formats:**")
                         for format_key, format_info in supported_formats.items():
                             with st.expander(f"📋 {format_info['name']} Format"):
-                                st.write("**Required columns:**")
-                                for col in format_info['required_columns']:
-                                    st.write(f"• {col}")
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.write("**Required columns:**")
+                                    for col in format_info['required_columns']:
+                                        st.write(f"• {col}")
+                                with col2:
+                                    if 'website' in format_info:
+                                        st.markdown(f"[🌐 Download CSV]({format_info['website']})", unsafe_allow_html=True)
                         return
                     
                     format_to_use = validation_result['detected_format']
@@ -577,14 +592,46 @@ class ExpenseTrackerUI:
                     amounts = [abs(t.amount) for t in st.session_state.transactions]
                     min_amount, max_amount = min(amounts), max(amounts)
                     
+                    st.write("**Amount Range ($)**")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        min_amt_input = st.number_input(
+                            "Min Amount",
+                            min_value=0.0,
+                            max_value=float(max_amount),
+                            value=0.0,
+                            step=1.0,
+                            key="min_amount_input"
+                        )
+                    
+                    with col2:
+                        max_amt_input = st.number_input(
+                            "Max Amount",
+                            min_value=0.0,
+                            max_value=float(max_amount),
+                            value=float(max_amount),
+                            step=1.0,
+                            key="max_amount_input"
+                        )
+                    
+                    # Also provide slider for convenience
                     amount_range = st.slider(
-                        "Amount Range ($)",
+                        "Or use slider",
                         min_value=0.0,
                         max_value=float(max_amount),
-                        value=(0.0, float(max_amount)),
+                        value=(min_amt_input, max_amt_input),
                         step=1.0,
-                        key="amount_filter"
+                        key="amount_filter_slider"
                     )
+                    
+                    # Use manual inputs if they differ from slider, otherwise use slider
+                    if (min_amt_input, max_amt_input) != amount_range:
+                        amount_range = (min_amt_input, max_amt_input)
+                    else:
+                        # Update number inputs to match slider
+                        st.session_state.min_amount_input = amount_range[0]
+                        st.session_state.max_amount_input = amount_range[1]
             
             # Apply filters
             filtered = st.session_state.transactions
@@ -1995,27 +2042,45 @@ class ExpenseTrackerUI:
             st.write("**🔄 Create Full Backup**")
             st.write("Create a complete backup of all your data including transactions, categories, and statistics.")
             
-            backup_type = st.radio(
-                "Backup Type",
-                ["JSON Export", "Database File"],
-                key="backup_type"
-            )
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                backup_name = st.text_input(
+                    "Backup Name (optional)",
+                    placeholder="e.g., monthly_backup, before_cleanup",
+                    help="Leave empty for automatic timestamp naming",
+                    key="backup_name_input"
+                )
+            with col2:
+                backup_type = st.radio(
+                    "Backup Type",
+                    ["JSON Export", "Database File"],
+                    key="backup_type"
+                )
             
             if st.button("📦 Create Full Backup", type="primary", key="create_backup"):
                 try:
+                    # Generate filename with custom name or timestamp
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    if backup_name.strip():
+                        # Sanitize backup name (remove special characters)
+                        import re
+                        sanitized_name = re.sub(r'[^\w\-_]', '_', backup_name.strip())
+                        base_name = f"{sanitized_name}_{timestamp}"
+                    else:
+                        base_name = f"backup_{timestamp}"
+                    
                     if backup_type == "JSON Export":
                         # Create comprehensive backup
                         backup_data = exporter.export_to_json(pretty=True)
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        filename = f"expense_tracker_backup_{timestamp}.json"
+                        filename = f"expense_tracker_{base_name}.json"
                         
                         st.session_state.backup_content = backup_data
                         st.session_state.backup_filename = filename
                         
-                        st.success("JSON backup created successfully!")
+                        st.success(f"✅ JSON backup '{filename}' created successfully!")
                     else:
                         # Create database file backup
-                        self._create_database_backup(f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                        self._create_database_backup(base_name)
                     
                 except Exception as e:
                     st.error(f"Backup creation failed: {e}")
@@ -3137,9 +3202,9 @@ class ExpenseTrackerUI:
             with open(backup_path, 'rb') as f:
                 backup_data = f.read()
             
-            st.success(f"✅ Database backup created successfully!")
+            st.success(f"✅ Database backup '{backup_filename}' created successfully!")
             st.download_button(
-                label="📥 Download Database Backup",
+                label=f"📥 Download {backup_filename}",
                 data=backup_data,
                 file_name=backup_filename,
                 mime="application/octet-stream",

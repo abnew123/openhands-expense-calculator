@@ -15,8 +15,8 @@ class TestIntegration:
         parser = CSVParser()
         
         # Step 1: Validate CSV format
-        is_valid = parser.validate_csv_format(sample_csv_content, "chase")
-        assert is_valid is True
+        validation_result = parser.validate_csv_format(sample_csv_content, "chase")
+        assert validation_result['valid'] is True
         
         # Step 2: Parse CSV to transactions
         transactions = parser.parse_chase_csv(sample_csv_content)
@@ -130,8 +130,8 @@ class TestIntegration:
         
         # Test invalid CSV handling
         invalid_csv = "invalid,csv,content"
-        is_valid = parser.validate_csv_format(invalid_csv, "chase")
-        assert is_valid is False
+        validation_result = parser.validate_csv_format(invalid_csv, "chase")
+        assert validation_result['valid'] is False
         
         transactions = parser.parse_chase_csv(invalid_csv)
         assert len(transactions) == 0

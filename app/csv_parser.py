@@ -18,6 +18,7 @@ class CSVParser:
         self.formats = {
             'chase': {
                 'name': 'Chase Credit Card',
+                'website': 'https://www.chase.com',
                 'required_columns': ['Transaction Date', 'Post Date', 'Description', 'Category', 'Type', 'Amount', 'Memo'],
                 'column_mapping': {
                     'transaction_date': 'Transaction Date',
@@ -32,6 +33,7 @@ class CSVParser:
             },
             'bank_of_america': {
                 'name': 'Bank of America',
+                'website': 'https://www.bankofamerica.com',
                 'required_columns': ['Date', 'Description', 'Amount', 'Running Bal.'],
                 'column_mapping': {
                     'transaction_date': 'Date',
@@ -46,6 +48,7 @@ class CSVParser:
             },
             'american_express': {
                 'name': 'American Express',
+                'website': 'https://www.americanexpress.com',
                 'required_columns': ['Date', 'Description', 'Amount'],
                 'column_mapping': {
                     'transaction_date': 'Date',
@@ -60,6 +63,7 @@ class CSVParser:
             },
             'wells_fargo': {
                 'name': 'Wells Fargo',
+                'website': 'https://www.wellsfargo.com',
                 'required_columns': ['Date', 'Amount', 'Description'],
                 'column_mapping': {
                     'transaction_date': 'Date',
@@ -74,6 +78,7 @@ class CSVParser:
             },
             'wells_fargo_headerless': {
                 'name': 'Wells Fargo (No Headers)',
+                'website': 'https://www.wellsfargo.com',
                 'required_columns': [],  # No headers to check
                 'column_mapping': {
                     'transaction_date': 0,  # First column (index)
@@ -89,6 +94,7 @@ class CSVParser:
             },
             'capital_one': {
                 'name': 'Capital One',
+                'website': 'https://www.capitalone.com',
                 'required_columns': ['Transaction Date', 'Posted Date', 'Card No.', 'Description', 'Category', 'Debit', 'Credit'],
                 'column_mapping': {
                     'transaction_date': 'Transaction Date',

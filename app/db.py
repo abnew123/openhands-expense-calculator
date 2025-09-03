@@ -97,6 +97,32 @@ class DatabaseManager:
         """Insert multiple transactions in a batch operation."""
         if not transactions:
             return []
+        
+        transaction_ids = []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                for transaction in transactions:
+                    cursor = conn.execute("""
+                        INSERT INTO transactions 
+                        (transaction_date, post_date, description, category, transaction_type, amount, memo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        transaction.transaction_date.isoformat(),
+                        transaction.post_date.isoformat(),
+                        transaction.description,
+                        transaction.category,
+                        transaction.transaction_type,
+                        float(transaction.amount),
+                        transaction.memo
+                    ))
+                    transaction_ids.append(cursor.lastrowid)
+                
+                conn.commit()
+                self.logger.info(f"Inserted {len(transaction_ids)} transactions in batch")
+                return transaction_ids
+        except Exception as e:
+            self.logger.error(f"Failed to insert transactions batch: {e}")
+            return []
     
     def create_category(self, category_name: str, parent_category: str = None) -> bool:
         """Create a new category and optionally add it to hierarchy."""

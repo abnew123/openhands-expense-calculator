@@ -12,22 +12,22 @@ class TestCSVParser:
     def test_validate_csv_format_valid(self, csv_parser, sample_csv_content):
         """Test CSV format validation with valid content."""
         result = csv_parser.validate_csv_format(sample_csv_content, "chase")
-        assert result is True
+        assert result['valid'] is True
     
     def test_validate_csv_format_invalid(self, csv_parser, invalid_csv_content):
         """Test CSV format validation with invalid content."""
         result = csv_parser.validate_csv_format(invalid_csv_content, "chase")
-        assert result is False
+        assert result['valid'] is False
     
     def test_validate_csv_format_empty(self, csv_parser):
         """Test CSV format validation with empty content."""
         result = csv_parser.validate_csv_format("", "chase")
-        assert result is False
+        assert result['valid'] is False
     
     def test_validate_csv_format_unsupported_format(self, csv_parser, sample_csv_content):
         """Test CSV format validation with unsupported format."""
         result = csv_parser.validate_csv_format(sample_csv_content, "unsupported")
-        assert result is False
+        assert result['valid'] is False
     
     def test_get_csv_preview(self, csv_parser, sample_csv_content):
         """Test CSV preview functionality."""
