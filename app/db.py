@@ -264,3 +264,92 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Failed to check transaction existence: {e}")
             raise
+    
+    def rename_category(self, old_category: str, new_category: str) -> int:
+        """Rename a category across all transactions. Returns number of transactions updated."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    UPDATE transactions 
+                    SET category = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE category = ?
+                """, (new_category, old_category))
+                
+                updated_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Renamed category '{old_category}' to '{new_category}' for {updated_count} transactions")
+                return updated_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to rename category: {e}")
+            raise
+    
+    def merge_categories(self, categories_to_merge: List[str], target_category: str) -> int:
+        """Merge multiple categories into a target category. Returns number of transactions updated."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                placeholders = ','.join(['?' for _ in categories_to_merge])
+                cursor = conn.execute(f"""
+                    UPDATE transactions 
+                    SET category = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE category IN ({placeholders})
+                """, [target_category] + categories_to_merge)
+                
+                updated_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Merged {len(categories_to_merge)} categories into '{target_category}' for {updated_count} transactions")
+                return updated_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to merge categories: {e}")
+            raise
+    
+    def delete_category(self, category: str, replacement_category: str = "Uncategorized") -> int:
+        """Delete a category by replacing it with a replacement category. Returns number of transactions updated."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    UPDATE transactions 
+                    SET category = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE category = ?
+                """, (replacement_category, category))
+                
+                updated_count = cursor.rowcount
+                conn.commit()
+                self.logger.info(f"Deleted category '{category}', replaced with '{replacement_category}' for {updated_count} transactions")
+                return updated_count
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to delete category: {e}")
+            raise
+    
+    def get_category_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Get statistics for each category including transaction count and total amounts."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT 
+                        category,
+                        COUNT(*) as transaction_count,
+                        SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_expenses,
+                        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_income,
+                        SUM(amount) as net_amount,
+                        MIN(transaction_date) as first_transaction,
+                        MAX(transaction_date) as last_transaction
+                    FROM transactions 
+                    GROUP BY category
+                    ORDER BY transaction_count DESC
+                """)
+                
+                stats = {}
+                for row in cursor.fetchall():
+                    stats[row[0]] = {
+                        'transaction_count': row[1],
+                        'total_expenses': abs(row[2]) if row[2] else 0,
+                        'total_income': row[3] if row[3] else 0,
+                        'net_amount': row[4],
+                        'first_transaction': row[5],
+                        'last_transaction': row[6]
+                    }
+                
+                return stats
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to get category stats: {e}")
+            raise

@@ -1,19 +1,19 @@
 # TICKET-007: Transaction Display and Listing
 
-## Status: TODO
+## Status: COMPLETED ✅
 
 ## Description
 Create the main transaction listing view that displays all transactions in a table format with sorting and basic interaction.
 
 ## Acceptance Criteria
-- [ ] Display transactions in a sortable table
-- [ ] Show all relevant fields (date, description, category, amount, etc.)
-- [ ] Implement pagination or virtual scrolling for large datasets
-- [ ] Add sorting by date, amount, category, description
-- [ ] Format amounts properly (currency, negative for expenses)
-- [ ] Format dates in user-friendly format
-- [ ] Add search/filter functionality for descriptions
-- [ ] Handle empty state when no transactions exist
+- [x] Display transactions in a sortable table
+- [x] Show all relevant fields (date, description, category, amount, etc.)
+- [x] Implement pagination or virtual scrolling for large datasets
+- [x] Add sorting by date, amount, category, description
+- [x] Format amounts properly (currency, negative for expenses)
+- [x] Format dates in user-friendly format
+- [x] Add search/filter functionality for descriptions
+- [x] Handle empty state when no transactions exist
 
 ## Dependencies
 - TICKET-003 (Database operations)
