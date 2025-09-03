@@ -234,17 +234,32 @@ class ExpenseTrackerUI:
                 
                 # Determine format
                 if selected_format == "Auto-detect":
-                    detected_format = self.csv_parser.detect_csv_format(csv_content)
-                    if not detected_format:
-                        st.error("❌ Could not detect CSV format")
+                    validation_result = self.csv_parser.validate_csv_format(csv_content, "auto")
+                    
+                    if not validation_result['valid']:
+                        st.error("❌ Could not detect or validate CSV format")
+                        st.error(f"**Error:** {validation_result['error_message']}")
+                        
+                        # Show detailed column information
+                        if validation_result['actual_columns']:
+                            st.info(f"**Found columns:** {', '.join(validation_result['actual_columns'])}")
+                        
                         st.info("**Supported formats:**")
-                        for format_info in supported_formats.values():
-                            st.write(f"• {format_info['name']}")
+                        for format_key, format_info in supported_formats.items():
+                            with st.expander(f"📋 {format_info['name']} Format"):
+                                st.write("**Required columns:**")
+                                for col in format_info['required_columns']:
+                                    st.write(f"• {col}")
                         return
                     
-                    format_to_use = detected_format
-                    format_name = supported_formats[detected_format]['name']
+                    format_to_use = validation_result['detected_format']
+                    format_name = supported_formats[format_to_use]['name']
                     st.success(f"✅ Detected format: {format_name}")
+                    
+                    # Show any extra columns as info
+                    if validation_result['extra_columns']:
+                        st.info(f"**Note:** Found additional columns that will be ignored: {', '.join(validation_result['extra_columns'])}")
+                        
                 else:
                     # Find format by name
                     format_to_use = None
@@ -258,11 +273,33 @@ class ExpenseTrackerUI:
                         return
                     
                     format_name = selected_format
-                
-                # Validate format
-                if not self.csv_parser.validate_csv_format(csv_content, format_to_use):
-                    st.error(f"❌ Invalid CSV format for {format_name}")
-                    st.info("Please check that your CSV file matches the expected format.")
+                    
+                    # Validate the specific format
+                    validation_result = self.csv_parser.validate_csv_format(csv_content, format_to_use)
+                    
+                    if not validation_result['valid']:
+                        st.error(f"❌ Invalid CSV format for {format_name}")
+                        st.error(f"**Error:** {validation_result['error_message']}")
+                        
+                        # Show detailed column information
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**Expected columns:**")
+                            for col in validation_result['expected_columns']:
+                                st.write(f"• {col}")
+                        
+                        with col2:
+                            st.write("**Found columns:**")
+                            for col in validation_result['actual_columns']:
+                                st.write(f"• {col}")
+                        
+                        if validation_result['missing_columns']:
+                            st.error(f"**Missing columns:** {', '.join(validation_result['missing_columns'])}")
+                        
+                        if validation_result['extra_columns']:
+                            st.warning(f"**Extra columns:** {', '.join(validation_result['extra_columns'])}")
+                        
+                        return
                     return
                 
                 # Show preview
@@ -279,26 +316,51 @@ class ExpenseTrackerUI:
                 
                 st.success(f"Found {len(transactions)} transactions")
                 
-                # Check for duplicates
-                new_transactions = []
-                duplicate_count = 0
+                # Enhanced duplicate detection with options
+                duplicate_analysis = self._analyze_duplicates(transactions)
                 
-                for transaction in transactions:
-                    if not self.db.transaction_exists(transaction):
-                        new_transactions.append(transaction)
+                # Show duplicate analysis results
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Transactions", len(transactions))
+                with col2:
+                    st.metric("New Transactions", duplicate_analysis['new_count'])
+                with col3:
+                    st.metric("Potential Duplicates", duplicate_analysis['duplicate_count'])
+                
+                # Show duplicate detection options
+                if duplicate_analysis['duplicate_count'] > 0:
+                    st.subheader("🔍 Duplicate Detection Results")
+                    
+                    duplicate_handling = st.radio(
+                        "How would you like to handle duplicates?",
+                        [
+                            "Skip all duplicates (recommended)",
+                            "Import all transactions (may create duplicates)",
+                            "Review duplicates manually"
+                        ],
+                        key="duplicate_handling"
+                    )
+                    
+                    if duplicate_handling == "Review duplicates manually":
+                        self._show_duplicate_review(duplicate_analysis['duplicates'])
+                        return
+                    elif duplicate_handling == "Import all transactions (may create duplicates)":
+                        new_transactions = transactions
+                        st.warning("⚠️ This will import all transactions, potentially creating duplicates.")
                     else:
-                        duplicate_count += 1
-                
-                if duplicate_count > 0:
-                    st.warning(f"Found {duplicate_count} duplicate transactions that will be skipped.")
+                        new_transactions = duplicate_analysis['new_transactions']
+                        st.info(f"Will skip {duplicate_analysis['duplicate_count']} duplicate transactions.")
+                else:
+                    new_transactions = transactions
                 
                 if new_transactions:
-                    st.info(f"Ready to import {len(new_transactions)} new transactions.")
+                    st.info(f"Ready to import {len(new_transactions)} transactions.")
                     
                     if st.button("Import Transactions", type="primary"):
                         self._import_transactions_with_progress(new_transactions)
                 else:
-                    st.info("All transactions in this file already exist in the database.")
+                    st.info("No new transactions to import after duplicate filtering.")
                     
             except Exception as e:
                 self.logger.error(f"Upload processing failed: {e}")
@@ -362,6 +424,10 @@ class ExpenseTrackerUI:
             st.subheader("💰 Spending by Category")
             self._show_enhanced_category_charts(expenses)
             
+            # Sankey diagram
+            st.subheader("🌊 Money Flow Analysis (Sankey Diagram)")
+            self._show_sankey_diagram(transactions)
+            
             # Time-based analysis
             st.subheader("📅 Spending Trends")
             self._show_enhanced_timeline_charts(expenses)
@@ -377,9 +443,19 @@ class ExpenseTrackerUI:
     def _show_filters(self):
         """Display enhanced filter controls with date presets."""
         with st.expander("🔍 Filters", expanded=True):
+            # Check if we have transactions
+            if not st.session_state.transactions:
+                st.info("No transactions available for filtering.")
+                return
+            
             # Get date bounds from transactions
-            min_date = min(t.transaction_date for t in st.session_state.transactions).date()
-            max_date = max(t.transaction_date for t in st.session_state.transactions).date()
+            try:
+                min_date = min(t.transaction_date for t in st.session_state.transactions).date()
+                max_date = max(t.transaction_date for t in st.session_state.transactions).date()
+            except (ValueError, AttributeError) as e:
+                st.error("Error getting date range from transactions. Please reload the data.")
+                self.logger.error(f"Date range error: {e}")
+                return
             
             # Date filtering section
             st.write("**📅 Date Range**")
@@ -444,9 +520,18 @@ class ExpenseTrackerUI:
                     end_date = today
                     start_date = today - timedelta(days=90)
                 else:  # Custom Range
-                    # Use session state to maintain custom range
+                    # Use session state to maintain custom range, but validate it
                     if 'custom_date_range' not in st.session_state:
                         st.session_state.custom_date_range = (min_date, max_date)
+                    else:
+                        # Validate existing custom range against current data bounds
+                        current_start, current_end = st.session_state.custom_date_range
+                        
+                        # If the stored range is outside current data bounds, reset it
+                        if (current_start < min_date or current_start > max_date or 
+                            current_end < min_date or current_end > max_date):
+                            st.session_state.custom_date_range = (min_date, max_date)
+                            st.info("Date range was reset because it was outside the current data range.")
                     
                     custom_range = st.date_input(
                         "Custom Date Range",
@@ -981,6 +1066,17 @@ class ExpenseTrackerUI:
         
         overview_df = pd.DataFrame(overview_data)
         st.dataframe(overview_df, use_container_width=True)
+        
+        # Category hierarchy management
+        st.subheader("🏗️ Category Hierarchy")
+        
+        tab1, tab2 = st.tabs(["View Hierarchy", "Manage Hierarchy"])
+        
+        with tab1:
+            self._show_category_hierarchy_view()
+        
+        with tab2:
+            self._show_category_hierarchy_management()
         
         # Category management actions
         st.subheader("🛠️ Category Actions")
@@ -2123,6 +2219,10 @@ class ExpenseTrackerUI:
                             deleted_count = self.db.delete_all_transactions()
                             st.success(f"✅ Deleted {deleted_count} transactions")
                             st.session_state.show_reset_confirmation = False
+                            
+                            # Clear date range filters and other session state
+                            self._reset_filters_after_data_deletion()
+                            
                             self._load_data()
                             st.experimental_rerun()
                         else:
@@ -2366,6 +2466,488 @@ class ExpenseTrackerUI:
         st.session_state.show_advanced_search = False
         self._load_data()
         st.experimental_rerun()
+    
+    def _reset_filters_after_data_deletion(self):
+        """Reset all filters and session state after data deletion."""
+        # Clear date range filters
+        if 'custom_date_range' in st.session_state:
+            del st.session_state.custom_date_range
+        
+        # Clear other filter-related session state
+        filter_keys_to_clear = [
+            'date_preset',
+            'category_filter', 
+            'type_filter',
+            'amount_filter',
+            'transaction_search',
+            'transaction_sort',
+            'selected_transactions',
+            'filtered_transactions'
+        ]
+        
+        for key in filter_keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Reset transactions and categories
+        st.session_state.transactions = []
+        st.session_state.categories = []
+        st.session_state.filtered_transactions = []
+        
+        self.logger.info("Reset all filters and session state after data deletion")
+    
+    def _analyze_duplicates(self, transactions):
+        """Analyze transactions for duplicates and return detailed results."""
+        new_transactions = []
+        duplicates = []
+        
+        for transaction in transactions:
+            if not self.db.transaction_exists(transaction):
+                new_transactions.append(transaction)
+            else:
+                # Find the specific duplicates for this transaction
+                potential_duplicates = self.db.find_potential_duplicates(transaction)
+                duplicates.append({
+                    'new_transaction': transaction,
+                    'existing_duplicates': potential_duplicates
+                })
+        
+        return {
+            'new_transactions': new_transactions,
+            'new_count': len(new_transactions),
+            'duplicates': duplicates,
+            'duplicate_count': len(duplicates),
+            'total_count': len(transactions)
+        }
+    
+    def _show_duplicate_review(self, duplicates):
+        """Show detailed duplicate review interface."""
+        st.subheader("🔍 Review Potential Duplicates")
+        st.write(f"Found {len(duplicates)} potential duplicates. Review each one below:")
+        
+        selected_to_import = []
+        
+        for i, duplicate_info in enumerate(duplicates):
+            new_transaction = duplicate_info['new_transaction']
+            existing_duplicates = duplicate_info['existing_duplicates']
+            
+            with st.expander(f"Duplicate {i+1}: {new_transaction.description[:50]}..."):
+                st.write("**New Transaction (from CSV):**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.write(f"Date: {new_transaction.transaction_date.strftime('%Y-%m-%d')}")
+                with col2:
+                    st.write(f"Amount: ${new_transaction.amount:.2f}")
+                with col3:
+                    st.write(f"Description: {new_transaction.description}")
+                
+                st.write("**Existing Transactions in Database:**")
+                for j, existing in enumerate(existing_duplicates):
+                    st.write(f"**Match {j+1}:**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.write(f"Date: {existing.transaction_date.strftime('%Y-%m-%d')}")
+                    with col2:
+                        st.write(f"Amount: ${existing.amount:.2f}")
+                    with col3:
+                        st.write(f"Description: {existing.description}")
+                
+                # Decision for this duplicate
+                decision = st.radio(
+                    f"Decision for transaction {i+1}:",
+                    ["Skip (it's a duplicate)", "Import (it's different)"],
+                    key=f"duplicate_decision_{i}"
+                )
+                
+                if decision == "Import (it's different)":
+                    selected_to_import.append(new_transaction)
+        
+        # Import selected transactions
+        if selected_to_import:
+            st.info(f"Selected {len(selected_to_import)} transactions to import.")
+            
+            if st.button("Import Selected Transactions", type="primary", key="import_selected"):
+                self._import_transactions_with_progress(selected_to_import)
+        else:
+            st.info("No transactions selected for import.")
+    
+    def _show_sankey_diagram(self, transactions):
+        """Show Sankey diagram for money flow analysis."""
+        try:
+            import plotly.graph_objects as go
+            
+            if not transactions:
+                st.info("No transactions available for Sankey diagram.")
+                return
+            
+            # Sankey diagram options
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                sankey_type = st.selectbox(
+                    "Sankey Diagram Type",
+                    ["Income → Categories → Subcategories", "Monthly Flow", "Category Hierarchy"],
+                    key="sankey_type"
+                )
+            
+            with col2:
+                time_period = st.selectbox(
+                    "Time Period",
+                    ["All Time", "Last 3 Months", "Last 6 Months", "This Year"],
+                    key="sankey_period"
+                )
+            
+            # Filter transactions by time period
+            filtered_transactions = self._filter_transactions_by_period(transactions, time_period)
+            
+            if sankey_type == "Income → Categories → Subcategories":
+                self._create_income_category_sankey(filtered_transactions)
+            elif sankey_type == "Monthly Flow":
+                self._create_monthly_flow_sankey(filtered_transactions)
+            else:
+                self._create_category_hierarchy_sankey(filtered_transactions)
+                
+        except ImportError:
+            st.error("Plotly is required for Sankey diagrams. Please install plotly.")
+        except Exception as e:
+            st.error(f"Error creating Sankey diagram: {e}")
+            self.logger.error(f"Sankey diagram error: {e}")
+    
+    def _filter_transactions_by_period(self, transactions, period):
+        """Filter transactions by time period."""
+        if period == "All Time":
+            return transactions
+        
+        from datetime import datetime, timedelta
+        today = datetime.now()
+        
+        if period == "Last 3 Months":
+            cutoff = today - timedelta(days=90)
+        elif period == "Last 6 Months":
+            cutoff = today - timedelta(days=180)
+        elif period == "This Year":
+            cutoff = datetime(today.year, 1, 1)
+        else:
+            return transactions
+        
+        return [t for t in transactions if t.transaction_date >= cutoff]
+    
+    def _create_income_category_sankey(self, transactions):
+        """Create Sankey diagram showing income flow to categories."""
+        import plotly.graph_objects as go
+        
+        # Separate income and expenses
+        income_transactions = [t for t in transactions if t.is_payment()]
+        expense_transactions = [t for t in transactions if t.is_expense()]
+        
+        if not income_transactions or not expense_transactions:
+            st.info("Need both income and expense transactions for this Sankey diagram.")
+            return
+        
+        # Calculate totals
+        total_income = sum(t.amount for t in income_transactions)
+        
+        # Group expenses by category
+        category_expenses = {}
+        for t in expense_transactions:
+            category_expenses[t.category] = category_expenses.get(t.category, 0) + abs(t.amount)
+        
+        # Create nodes and links
+        nodes = ["Income"] + list(category_expenses.keys())
+        node_colors = ["#2E8B57"] + ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE"][:len(category_expenses)]
+        
+        # Create links from income to categories
+        sources = [0] * len(category_expenses)  # All from "Income"
+        targets = list(range(1, len(category_expenses) + 1))  # To each category
+        values = list(category_expenses.values())
+        
+        # Create Sankey diagram
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=nodes,
+                color=node_colors
+            ),
+            link=dict(
+                source=sources,
+                target=targets,
+                value=values,
+                color=["rgba(255,107,107,0.3)"] * len(values)
+            )
+        )])
+        
+        fig.update_layout(
+            title_text="Money Flow: Income → Spending Categories",
+            font_size=12,
+            height=600
+        )
+        
+        st.plotly_chart(fig, use_container_width=True, key="income_category_sankey")
+        
+        # Show summary
+        st.write("**Summary:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Income", f"${total_income:.2f}")
+        with col2:
+            st.metric("Total Expenses", f"${sum(category_expenses.values()):.2f}")
+        with col3:
+            st.metric("Net Amount", f"${total_income - sum(category_expenses.values()):.2f}")
+    
+    def _create_monthly_flow_sankey(self, transactions):
+        """Create Sankey diagram showing monthly money flow."""
+        import plotly.graph_objects as go
+        
+        # Group transactions by month and category
+        monthly_data = {}
+        for t in transactions:
+            month_key = t.transaction_date.strftime('%Y-%m')
+            if month_key not in monthly_data:
+                monthly_data[month_key] = {}
+            
+            category = t.category
+            if category not in monthly_data[month_key]:
+                monthly_data[month_key][category] = 0
+            
+            monthly_data[month_key][category] += abs(t.amount) if t.is_expense() else 0
+        
+        if len(monthly_data) < 2:
+            st.info("Need at least 2 months of data for monthly flow Sankey diagram.")
+            return
+        
+        # Create nodes (months + categories)
+        months = sorted(monthly_data.keys())[-6:]  # Last 6 months
+        all_categories = set()
+        for month_data in monthly_data.values():
+            all_categories.update(month_data.keys())
+        
+        nodes = months + list(all_categories)
+        
+        # Create links
+        sources = []
+        targets = []
+        values = []
+        
+        for i, month in enumerate(months):
+            for category, amount in monthly_data[month].items():
+                if amount > 0:
+                    sources.append(i)  # Month index
+                    targets.append(len(months) + list(all_categories).index(category))  # Category index
+                    values.append(amount)
+        
+        if not sources:
+            st.info("No expense data available for monthly flow diagram.")
+            return
+        
+        # Create Sankey diagram
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=nodes,
+                color=["#4ECDC4"] * len(months) + ["#FF6B6B"] * len(all_categories)
+            ),
+            link=dict(
+                source=sources,
+                target=targets,
+                value=values
+            )
+        )])
+        
+        fig.update_layout(
+            title_text="Monthly Money Flow to Categories",
+            font_size=12,
+            height=600
+        )
+        
+        st.plotly_chart(fig, use_container_width=True, key="monthly_flow_sankey")
+    
+    def _create_category_hierarchy_sankey(self, transactions):
+        """Create Sankey diagram showing category hierarchy."""
+        import plotly.graph_objects as go
+        
+        # Get category hierarchy
+        hierarchy = self.db.get_category_hierarchy()
+        
+        if not hierarchy:
+            st.info("No category hierarchy defined. Set up category relationships first.")
+            
+            # Show category hierarchy management
+            self._show_category_hierarchy_management()
+            return
+        
+        # Calculate amounts for each category
+        category_amounts = {}
+        for t in transactions:
+            if t.is_expense():
+                category_amounts[t.category] = category_amounts.get(t.category, 0) + abs(t.amount)
+        
+        # Create nodes and links based on hierarchy
+        nodes = []
+        sources = []
+        targets = []
+        values = []
+        
+        # Add root categories first
+        root_categories = [cat for cat, info in hierarchy.items() if info['parent'] is None]
+        
+        for root_cat in root_categories:
+            if root_cat not in nodes:
+                nodes.append(root_cat)
+            
+            # Add children
+            for child in hierarchy[root_cat]['children']:
+                if child not in nodes:
+                    nodes.append(child)
+                
+                # Create link from parent to child
+                if child in category_amounts:
+                    sources.append(nodes.index(root_cat))
+                    targets.append(nodes.index(child))
+                    values.append(category_amounts[child])
+        
+        if not sources:
+            st.info("No hierarchical relationships found with transaction data.")
+            return
+        
+        # Create Sankey diagram
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=nodes,
+                color=["#45B7D1"] * len(nodes)
+            ),
+            link=dict(
+                source=sources,
+                target=targets,
+                value=values
+            )
+        )])
+        
+        fig.update_layout(
+            title_text="Category Hierarchy Money Flow",
+            font_size=12,
+            height=600
+        )
+        
+        st.plotly_chart(fig, use_container_width=True, key="hierarchy_sankey")
+    
+    def _show_category_hierarchy_management(self):
+        """Show interface for managing category hierarchy."""
+        st.subheader("🏗️ Category Hierarchy Management")
+        
+        # Get existing categories
+        existing_categories = self.db.get_categories()
+        hierarchy = self.db.get_category_hierarchy()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Add Category Relationship**")
+            
+            child_category = st.selectbox(
+                "Child Category",
+                existing_categories,
+                key="hierarchy_child"
+            )
+            
+            parent_options = ["None (Root Category)"] + [cat for cat in existing_categories if cat != child_category]
+            parent_category = st.selectbox(
+                "Parent Category",
+                parent_options,
+                key="hierarchy_parent"
+            )
+            
+            if st.button("Add Relationship", key="add_hierarchy"):
+                parent = None if parent_category == "None (Root Category)" else parent_category
+                success = self.db.add_category_hierarchy(child_category, parent)
+                
+                if success:
+                    st.success(f"✅ Added '{child_category}' under '{parent_category}'")
+                    st.experimental_rerun()
+                else:
+                    st.error("❌ Failed to add relationship")
+        
+        with col2:
+            st.write("**Current Hierarchy**")
+            
+            if hierarchy:
+                # Display hierarchy as tree
+                root_categories = [cat for cat, info in hierarchy.items() if info['parent'] is None]
+                
+                for root_cat in root_categories:
+                    st.write(f"📁 **{root_cat}**")
+                    self._display_category_tree(root_cat, hierarchy, level=1)
+            else:
+                st.info("No hierarchy defined yet.")
+    
+    def _display_category_tree(self, category, hierarchy, level=0):
+        """Recursively display category tree."""
+        indent = "  " * level
+        
+        if category in hierarchy:
+            for child in hierarchy[category]['children']:
+                st.write(f"{indent}├── {child}")
+                self._display_category_tree(child, hierarchy, level + 1)
+    
+    def _show_category_hierarchy_view(self):
+        """Show the current category hierarchy in a readable format."""
+        hierarchy = self.db.get_category_hierarchy()
+        
+        if not hierarchy:
+            st.info("No category hierarchy has been set up yet. Use the 'Manage Hierarchy' tab to create relationships between categories.")
+            return
+        
+        # Show hierarchy statistics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            total_categories = len(hierarchy)
+            st.metric("Total Categories", total_categories)
+        
+        with col2:
+            root_categories = len([cat for cat, info in hierarchy.items() if info['parent'] is None])
+            st.metric("Root Categories", root_categories)
+        
+        with col3:
+            max_level = max(info['level'] for info in hierarchy.values()) if hierarchy else 0
+            st.metric("Max Depth", max_level + 1)
+        
+        # Display hierarchy tree
+        st.write("**Category Tree:**")
+        
+        root_categories = [cat for cat, info in hierarchy.items() if info['parent'] is None]
+        
+        if root_categories:
+            for root_cat in root_categories:
+                # Get transaction count for this category and its children
+                category_transactions = self.db.get_transactions_by_category_hierarchy(root_cat, include_children=True)
+                transaction_count = len(category_transactions)
+                total_amount = sum(abs(t.amount) for t in category_transactions if t.is_expense())
+                
+                st.write(f"📁 **{root_cat}** ({transaction_count} transactions, ${total_amount:.2f})")
+                self._display_category_tree_with_stats(root_cat, hierarchy, level=1)
+        else:
+            st.info("All categories are at root level (no hierarchy defined).")
+    
+    def _display_category_tree_with_stats(self, category, hierarchy, level=0):
+        """Display category tree with transaction statistics."""
+        indent = "  " * level
+        
+        if category in hierarchy:
+            for child in hierarchy[category]['children']:
+                # Get stats for this child category
+                child_transactions = self.db.get_transactions_by_category_hierarchy(child, include_children=False)
+                transaction_count = len(child_transactions)
+                total_amount = sum(abs(t.amount) for t in child_transactions if t.is_expense())
+                
+                st.write(f"{indent}├── {child} ({transaction_count} transactions, ${total_amount:.2f})")
+                self._display_category_tree_with_stats(child, hierarchy, level + 1)
     
     def _create_database_backup(self, backup_name: str):
         """Create a backup of the current database."""

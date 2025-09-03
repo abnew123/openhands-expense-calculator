@@ -44,9 +44,9 @@ class CSVParser:
                 },
                 'date_format': '%m/%d/%Y'
             },
-            'wells_fargo': {
-                'name': 'Wells Fargo',
-                'required_columns': ['Date', 'Amount', 'Description'],
+            'american_express': {
+                'name': 'American Express',
+                'required_columns': ['Date', 'Description', 'Amount'],
                 'column_mapping': {
                     'transaction_date': 'Date',
                     'post_date': 'Date',  # Use same date for both
@@ -58,9 +58,9 @@ class CSVParser:
                 },
                 'date_format': '%m/%d/%Y'
             },
-            'american_express': {
-                'name': 'American Express',
-                'required_columns': ['Date', 'Description', 'Amount'],
+            'wells_fargo': {
+                'name': 'Wells Fargo',
+                'required_columns': ['Date', 'Amount', 'Description'],
                 'column_mapping': {
                     'transaction_date': 'Date',
                     'post_date': 'Date',  # Use same date for both
@@ -88,28 +88,77 @@ class CSVParser:
             }
         }
     
-    def validate_csv_format(self, csv_content: str, format_type: str = "auto") -> bool:
-        """Validate if CSV content matches the expected format."""
+    def validate_csv_format(self, csv_content: str, format_type: str = "auto") -> dict:
+        """Validate if CSV content matches the expected format and return detailed results."""
+        result = {
+            'valid': False,
+            'detected_format': None,
+            'error_message': '',
+            'missing_columns': [],
+            'extra_columns': [],
+            'actual_columns': [],
+            'expected_columns': []
+        }
+        
         try:
             if not csv_content or not csv_content.strip():
-                return False
+                result['error_message'] = "CSV content is empty"
+                return result
             
             df = pd.read_csv(StringIO(csv_content))
+            result['actual_columns'] = list(df.columns)
             
             if format_type == "auto":
                 # Try to detect format automatically
                 detected_format = self.detect_csv_format(csv_content)
-                return detected_format is not None
+                result['detected_format'] = detected_format
+                
+                if detected_format is None:
+                    result['error_message'] = f"Could not detect CSV format. Found columns: {result['actual_columns']}"
+                    return result
+                
+                format_spec = self.formats[detected_format]
+                result['expected_columns'] = format_spec['required_columns']
+                
+                # Check if all required columns are present
+                missing = [col for col in format_spec['required_columns'] if col not in df.columns]
+                extra = [col for col in df.columns if col not in format_spec['required_columns']]
+                
+                result['missing_columns'] = missing
+                result['extra_columns'] = extra
+                
+                if not missing:
+                    result['valid'] = True
+                else:
+                    result['error_message'] = f"Missing required columns for {format_spec['name']}: {missing}"
+                
+                return result
             
             if format_type.lower() in self.formats:
                 format_spec = self.formats[format_type.lower()]
-                required_columns = format_spec['required_columns']
-                return all(col in df.columns for col in required_columns)
+                result['expected_columns'] = format_spec['required_columns']
+                result['detected_format'] = format_type.lower()
+                
+                missing = [col for col in format_spec['required_columns'] if col not in df.columns]
+                extra = [col for col in df.columns if col not in format_spec['required_columns']]
+                
+                result['missing_columns'] = missing
+                result['extra_columns'] = extra
+                
+                if not missing:
+                    result['valid'] = True
+                else:
+                    result['error_message'] = f"Missing required columns for {format_spec['name']}: {missing}"
+                
+                return result
             
-            return False
+            result['error_message'] = f"Unsupported format type: {format_type}"
+            return result
+            
         except Exception as e:
+            result['error_message'] = f"CSV validation failed: {str(e)}"
             self.logger.error(f"CSV validation failed: {e}")
-            return False
+            return result
     
     def get_csv_preview(self, csv_content: str, max_rows: int = 5) -> pd.DataFrame:
         """Get a preview of the CSV content."""
@@ -203,18 +252,7 @@ class CSVParser:
         
         raise ValueError(f"Unable to parse date: {date_str}")
     
-    def validate_csv_format(self, csv_content: str, format_type: str = "chase") -> bool:
-        """Validate that CSV content matches expected format."""
-        try:
-            if format_type.lower() == "chase":
-                df = pd.read_csv(StringIO(csv_content))
-                required_columns = ['Transaction Date', 'Post Date', 'Description', 'Category', 'Type', 'Amount', 'Memo']
-                return all(col in df.columns for col in required_columns)
-            else:
-                raise ValueError(f"Unsupported format type: {format_type}")
-        except Exception as e:
-            self.logger.error(f"CSV validation failed: {e}")
-            return False
+
     
     def get_csv_preview(self, csv_content: str, max_rows: int = 5) -> pd.DataFrame:
         """Get a preview of the CSV data for user verification."""

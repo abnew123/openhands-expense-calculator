@@ -41,6 +41,18 @@ class DatabaseManager:
                     )
                 """)
                 
+                # Create category hierarchy table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS category_hierarchy (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        category_name TEXT NOT NULL UNIQUE,
+                        parent_category TEXT,
+                        level INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (parent_category) REFERENCES category_hierarchy (category_name)
+                    )
+                """)
+                
                 # Create indexes for common queries
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_transaction_date ON transactions(transaction_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON transactions(category)")
@@ -801,3 +813,129 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Failed to get optimized category stats: {e}")
             raise
+    
+    def add_category_hierarchy(self, category_name: str, parent_category: str = None) -> bool:
+        """Add a category to the hierarchy."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Calculate level based on parent
+                level = 0
+                if parent_category:
+                    cursor = conn.execute("SELECT level FROM category_hierarchy WHERE category_name = ?", (parent_category,))
+                    parent_row = cursor.fetchone()
+                    if parent_row:
+                        level = parent_row[0] + 1
+                    else:
+                        # Parent doesn't exist, create it first
+                        self.add_category_hierarchy(parent_category)
+                        level = 1
+                
+                # Insert or update category
+                conn.execute("""
+                    INSERT OR REPLACE INTO category_hierarchy (category_name, parent_category, level)
+                    VALUES (?, ?, ?)
+                """, (category_name, parent_category, level))
+                
+                conn.commit()
+                self.logger.info(f"Added category '{category_name}' to hierarchy with parent '{parent_category}'")
+                return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to add category hierarchy: {e}")
+            return False
+    
+    def get_category_hierarchy(self) -> Dict[str, Dict]:
+        """Get the complete category hierarchy."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT category_name, parent_category, level 
+                    FROM category_hierarchy 
+                    ORDER BY level, category_name
+                """)
+                rows = cursor.fetchall()
+                
+                hierarchy = {}
+                for row in rows:
+                    hierarchy[row['category_name']] = {
+                        'parent': row['parent_category'],
+                        'level': row['level'],
+                        'children': []
+                    }
+                
+                # Build children relationships
+                for category, info in hierarchy.items():
+                    if info['parent'] and info['parent'] in hierarchy:
+                        hierarchy[info['parent']]['children'].append(category)
+                
+                return hierarchy
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to get category hierarchy: {e}")
+            return {}
+    
+    def get_category_path(self, category_name: str) -> List[str]:
+        """Get the full path from root to category."""
+        try:
+            hierarchy = self.get_category_hierarchy()
+            if category_name not in hierarchy:
+                return [category_name]
+            
+            path = []
+            current = category_name
+            
+            while current:
+                path.insert(0, current)
+                current = hierarchy.get(current, {}).get('parent')
+            
+            return path
+        except Exception as e:
+            self.logger.error(f"Failed to get category path: {e}")
+            return [category_name]
+    
+    def get_category_children(self, category_name: str) -> List[str]:
+        """Get all child categories (recursive)."""
+        try:
+            hierarchy = self.get_category_hierarchy()
+            if category_name not in hierarchy:
+                return []
+            
+            children = []
+            
+            def collect_children(cat_name):
+                if cat_name in hierarchy:
+                    for child in hierarchy[cat_name]['children']:
+                        children.append(child)
+                        collect_children(child)
+            
+            collect_children(category_name)
+            return children
+        except Exception as e:
+            self.logger.error(f"Failed to get category children: {e}")
+            return []
+    
+    def get_transactions_by_category_hierarchy(self, category_name: str, include_children: bool = True) -> List[Transaction]:
+        """Get transactions for a category and optionally its children."""
+        try:
+            categories = [category_name]
+            if include_children:
+                categories.extend(self.get_category_children(category_name))
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                placeholders = ','.join(['?' for _ in categories])
+                cursor = conn.execute(f"""
+                    SELECT * FROM transactions 
+                    WHERE category IN ({placeholders})
+                    ORDER BY transaction_date DESC, id DESC
+                """, categories)
+                rows = cursor.fetchall()
+                
+                transactions = []
+                for row in rows:
+                    transaction = Transaction.from_dict(dict(row))
+                    transactions.append(transaction)
+                
+                return transactions
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to get transactions by category hierarchy: {e}")
+            return []
