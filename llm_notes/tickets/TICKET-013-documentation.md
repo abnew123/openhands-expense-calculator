@@ -1,23 +1,23 @@
 # TICKET-013: Documentation and README
 
-## Status: TODO
+## Status: COMPLETED ✅
 
 ## Description
 Create comprehensive documentation explaining how to set up, run, and use the expense tracker application.
 
 ## Acceptance Criteria
-- [ ] Update README.md with:
+- [x] Update README.md with:
   - Project description and features
   - Local setup instructions
   - Docker setup and usage
   - How to upload CSV files
   - How to use the application features
   - Troubleshooting common issues
-- [ ] Document the Chase CSV format requirements
-- [ ] Add screenshots or examples of the UI
-- [ ] Include development setup instructions
-- [ ] Document testing procedures
-- [ ] Add contribution guidelines if applicable
+- [x] Document the Chase CSV format requirements
+- [x] Add screenshots or examples of the UI
+- [x] Include development setup instructions
+- [x] Document testing procedures
+- [x] Add contribution guidelines if applicable
 
 ## Dependencies
 - All other tickets (need working application to document)

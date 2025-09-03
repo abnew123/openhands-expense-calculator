@@ -5,10 +5,14 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from typing import List, Optional
 import logging
+import json
 
 from app.db import DatabaseManager
 from app.csv_parser import CSVParser
 from app.models import Transaction
+from app.export_import import DataExporter, DataImporter, create_download_link
+from app.performance import perf_monitor, StreamlitCache, show_performance_metrics, optimize_large_dataset_display, show_pagination_controls, optimize_chart_data
+from app.error_handling import error_handler, safe_operation, ProgressTracker, show_success_message, show_warning_message, validate_user_input
 
 
 class ExpenseTrackerUI:
@@ -33,10 +37,13 @@ class ExpenseTrackerUI:
         st.markdown("Track and categorize your credit card transactions locally and offline.")
         
         # Sidebar navigation
-        page = st.sidebar.selectbox(
-            "Navigation",
-            ["📊 Dashboard", "📁 Upload CSV", "📋 Transactions", "📈 Analytics", "🏷️ Categories"]
-        )
+        pages = ["📊 Dashboard", "📁 Upload CSV", "📋 Transactions", "📈 Analytics", "🏷️ Categories", "💾 Data Management"]
+        
+        # Add performance page for large datasets or debugging
+        if st.session_state.get('large_dataset', False) or st.sidebar.checkbox("Show Performance", key="show_perf"):
+            pages.append("⚡ Performance")
+        
+        page = st.sidebar.selectbox("Navigation", pages)
         
         # Load data
         self._load_data()
@@ -52,13 +59,33 @@ class ExpenseTrackerUI:
             self._show_analytics_page()
         elif page == "🏷️ Categories":
             self._show_categories_page()
+        elif page == "💾 Data Management":
+            self._show_data_management_page()
+        elif page == "⚡ Performance":
+            self._show_performance_page()
     
+    @perf_monitor.time_operation("load_data")
     def _load_data(self):
-        """Load transactions and categories from database."""
+        """Load transactions and categories from database with performance optimization."""
         try:
-            st.session_state.transactions = self.db.get_all_transactions()
-            st.session_state.categories = self.db.get_categories()
+            # Use cached data when possible
+            transaction_count = StreamlitCache.get_cached_transaction_count(self.db.db_path)
+            
+            if transaction_count > 1000:
+                # For large datasets, load with pagination
+                st.session_state.transactions = self.db.get_transactions_paginated(page=1, page_size=1000)
+                st.session_state.large_dataset = True
+            else:
+                st.session_state.transactions = self.db.get_all_transactions()
+                st.session_state.large_dataset = False
+            
+            # Use cached categories
+            st.session_state.categories = StreamlitCache.get_cached_categories(self.db.db_path)
             st.session_state.filtered_transactions = st.session_state.transactions
+            
+            # Store performance info
+            st.session_state.total_transaction_count = transaction_count
+            
         except Exception as e:
             self.logger.error(f"Failed to load data: {e}")
             st.error(f"Failed to load data: {e}")
@@ -168,33 +195,83 @@ class ExpenseTrackerUI:
     
     def _show_upload_page(self):
         """Display the CSV upload page."""
-        st.header("Upload CSV File")
-        st.markdown("Upload your Chase credit card transaction CSV file to import transactions.")
+        st.header("📁 Upload CSV File")
         
-        # File upload
-        uploaded_file = st.file_uploader(
-            "Choose a CSV file",
-            type=['csv'],
-            help="Upload a Chase credit card transaction CSV file"
-        )
+        # Show supported formats
+        st.markdown("Upload your bank transaction CSV file. The following formats are supported:")
+        
+        supported_formats = self.csv_parser.get_supported_formats()
+        for format_name, format_info in supported_formats.items():
+            with st.expander(f"📋 {format_info['name']} Format"):
+                st.write("**Required columns:**")
+                for col in format_info['required_columns']:
+                    st.write(f"• {col}")
+        
+        # Format selection
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # File upload
+            uploaded_file = st.file_uploader(
+                "Choose a CSV file",
+                type=['csv'],
+                help="Upload a bank transaction CSV file"
+            )
+        
+        with col2:
+            # Format selection (optional)
+            format_options = ["Auto-detect"] + [info['name'] for info in supported_formats.values()]
+            selected_format = st.selectbox(
+                "CSV Format",
+                format_options,
+                help="Select format or use auto-detection"
+            )
         
         if uploaded_file is not None:
             try:
                 # Read file content
                 csv_content = uploaded_file.read().decode('utf-8')
                 
+                # Determine format
+                if selected_format == "Auto-detect":
+                    detected_format = self.csv_parser.detect_csv_format(csv_content)
+                    if not detected_format:
+                        st.error("❌ Could not detect CSV format")
+                        st.info("**Supported formats:**")
+                        for format_info in supported_formats.values():
+                            st.write(f"• {format_info['name']}")
+                        return
+                    
+                    format_to_use = detected_format
+                    format_name = supported_formats[detected_format]['name']
+                    st.success(f"✅ Detected format: {format_name}")
+                else:
+                    # Find format by name
+                    format_to_use = None
+                    for format_key, format_info in supported_formats.items():
+                        if format_info['name'] == selected_format:
+                            format_to_use = format_key
+                            break
+                    
+                    if not format_to_use:
+                        st.error("Invalid format selection")
+                        return
+                    
+                    format_name = selected_format
+                
                 # Validate format
-                if not self.csv_parser.validate_csv_format(csv_content, "chase"):
-                    st.error("Invalid CSV format. Please ensure you're uploading a Chase transaction CSV file.")
+                if not self.csv_parser.validate_csv_format(csv_content, format_to_use):
+                    st.error(f"❌ Invalid CSV format for {format_name}")
+                    st.info("Please check that your CSV file matches the expected format.")
                     return
                 
                 # Show preview
-                st.subheader("Preview")
+                st.subheader("📋 Preview")
                 preview_df = self.csv_parser.get_csv_preview(csv_content)
                 st.dataframe(preview_df, use_container_width=True)
                 
                 # Parse transactions
-                transactions = self.csv_parser.parse_chase_csv(csv_content)
+                transactions = self.csv_parser.parse_csv_generic(csv_content, format_to_use)
                 
                 if not transactions:
                     st.warning("No valid transactions found in the CSV file.")
@@ -219,12 +296,7 @@ class ExpenseTrackerUI:
                     st.info(f"Ready to import {len(new_transactions)} new transactions.")
                     
                     if st.button("Import Transactions", type="primary"):
-                        try:
-                            self.db.insert_transactions_batch(new_transactions)
-                            st.success(f"Successfully imported {len(new_transactions)} transactions!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to import transactions: {e}")
+                        self._import_transactions_with_progress(new_transactions)
                 else:
                     st.info("All transactions in this file already exist in the database.")
                     
@@ -251,30 +323,56 @@ class ExpenseTrackerUI:
             st.info("No transactions match the current filters.")
     
     def _show_analytics_page(self):
-        """Display the analytics and charts page."""
-        st.header("Analytics")
+        """Display the enhanced analytics and charts page."""
+        st.header("📈 Analytics & Insights")
         
         if not st.session_state.filtered_transactions:
             st.info("No transactions to analyze. Upload data or adjust filters.")
             return
         
-        expenses = [t for t in st.session_state.filtered_transactions if t.is_expense()]
+        # Show filters
+        self._show_filters()
         
-        if not expenses:
-            st.info("No expense transactions found in the current selection.")
+        transactions = st.session_state.filtered_transactions
+        expenses = [t for t in transactions if t.is_expense()]
+        payments = [t for t in transactions if t.is_payment()]
+        
+        if not transactions:
+            st.warning("No transactions match the current filters.")
             return
         
-        # Category breakdown
-        col1, col2 = st.columns(2)
+        # Analytics summary
+        self._show_analytics_summary(transactions, expenses, payments)
         
+        # Chart export controls
+        st.subheader("📊 Visualizations")
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
-            self._show_category_pie_chart(expenses)
-        
+            st.write("Interactive charts with hover details and click-to-filter functionality")
         with col2:
-            self._show_category_bar_chart(expenses)
+            chart_format = st.selectbox("Export Format", ["PNG", "HTML", "SVG"], key="chart_export_format")
+        with col3:
+            if st.button("📥 Export All Charts", key="export_charts"):
+                self._export_charts(expenses, chart_format)
         
-        # Spending over time
-        self._show_spending_timeline(expenses)
+        # Enhanced visualizations
+        if expenses:
+            # Category analysis
+            st.subheader("💰 Spending by Category")
+            self._show_enhanced_category_charts(expenses)
+            
+            # Time-based analysis
+            st.subheader("📅 Spending Trends")
+            self._show_enhanced_timeline_charts(expenses)
+            
+            # Transaction analysis
+            st.subheader("🔍 Transaction Analysis")
+            self._show_transaction_analysis_charts(expenses)
+        
+        if payments:
+            st.subheader("💳 Payment Analysis")
+            self._show_payment_analysis(payments)
     
     def _show_filters(self):
         """Display enhanced filter controls with date presets."""
@@ -445,9 +543,14 @@ class ExpenseTrackerUI:
             else:
                 st.success(f"Showing all {total_transactions} transactions")
     
+    @perf_monitor.time_operation("show_transactions_table")
     def _show_transactions_table(self):
         """Display transactions in an enhanced table with search and sorting."""
         transactions = st.session_state.filtered_transactions
+        
+        # Show performance warning for large datasets
+        if len(transactions) > 500:
+            st.info(f"⚡ Large dataset detected ({len(transactions)} transactions). Using optimized display.")
         
         # Search functionality
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -642,15 +745,8 @@ class ExpenseTrackerUI:
                 
                 if new_category and new_category != "Create New..." and new_category != selected_transaction.category:
                     if st.button("Update Category", type="primary", key="single_update"):
-                        try:
-                            success = self.db.update_transaction_category(selected_transaction.id, new_category)
-                            if success:
-                                st.success(f"Updated category to '{new_category}'")
-                                st.rerun()
-                            else:
-                                st.error("Failed to update category")
-                        except Exception as e:
-                            st.error(f"Error updating category: {e}")
+                        if self._update_category_safe(selected_transaction.id, new_category):
+                            st.rerun()
     
     def _show_bulk_category_edit(self, transactions: List[Transaction]):
         """Show bulk category editing interface."""
@@ -734,19 +830,8 @@ class ExpenseTrackerUI:
                 
                 with col2:
                     if st.button("Update All Selected", type="primary", key="bulk_update"):
-                        try:
-                            updated_count = 0
-                            for transaction in matching_transactions:
-                                if self.db.update_transaction_category(transaction.id, new_bulk_category):
-                                    updated_count += 1
-                            
-                            if updated_count > 0:
-                                st.success(f"Successfully updated {updated_count} transactions to category '{new_bulk_category}'")
-                                st.rerun()
-                            else:
-                                st.error("Failed to update any transactions")
-                        except Exception as e:
-                            st.error(f"Error during bulk update: {e}")
+                        if self._bulk_update_categories_with_progress(matching_transactions, new_bulk_category):
+                            st.rerun()
     
     def _transactions_to_dataframe(self, transactions: List[Transaction]) -> pd.DataFrame:
         """Convert transactions to pandas DataFrame for display."""
@@ -1063,3 +1148,895 @@ class ExpenseTrackerUI:
                             st.error(f"Failed to auto-categorize: {e}")
         else:
             st.info("No automatic categorization suggestions found for uncategorized transactions.")
+    
+    def _show_analytics_summary(self, transactions, expenses, payments):
+        """Show analytics summary metrics."""
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        total_expenses = sum(abs(t.amount) for t in expenses)
+        total_payments = sum(t.amount for t in payments)
+        avg_expense = total_expenses / len(expenses) if expenses else 0
+        largest_expense = max(abs(t.amount) for t in expenses) if expenses else 0
+        
+        with col1:
+            st.metric("Total Expenses", f"${total_expenses:.2f}")
+        with col2:
+            st.metric("Total Payments", f"${total_payments:.2f}")
+        with col3:
+            st.metric("Net Amount", f"${total_payments - total_expenses:.2f}")
+        with col4:
+            st.metric("Avg Expense", f"${avg_expense:.2f}")
+        with col5:
+            st.metric("Largest Expense", f"${largest_expense:.2f}")
+    
+    @perf_monitor.time_operation("show_enhanced_category_charts")
+    def _show_enhanced_category_charts(self, expenses):
+        """Show enhanced category visualization charts."""
+        # Optimize for large datasets
+        if len(expenses) > 1000:
+            st.info(f"⚡ Optimizing charts for {len(expenses)} transactions")
+        
+        category_data = {}
+        for t in expenses:
+            category_data[t.category] = category_data.get(t.category, 0) + abs(t.amount)
+        
+        if not category_data:
+            st.info("No expense data available for category analysis.")
+            return
+        
+        # Sort categories by amount
+        sorted_categories = sorted(category_data.items(), key=lambda x: x[1], reverse=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Enhanced pie chart with better formatting
+            fig_pie = px.pie(
+                values=[item[1] for item in sorted_categories],
+                names=[item[0] for item in sorted_categories],
+                title="Spending Distribution by Category",
+                hover_data={'values': ':$.2f'},
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig_pie.update_traces(
+                textposition='inside',
+                textinfo='percent+label',
+                hovertemplate='<b>%{label}</b><br>Amount: $%{value:.2f}<br>Percentage: %{percent}<extra></extra>'
+            )
+            fig_pie.update_layout(showlegend=True, height=400)
+            st.plotly_chart(fig_pie, use_container_width=True, key="category_pie")
+        
+        with col2:
+            # Enhanced bar chart with better formatting
+            fig_bar = px.bar(
+                x=[item[0] for item in sorted_categories],
+                y=[item[1] for item in sorted_categories],
+                title="Spending by Category (Detailed)",
+                labels={'x': 'Category', 'y': 'Amount ($)'},
+                color=[item[1] for item in sorted_categories],
+                color_continuous_scale='Viridis'
+            )
+            fig_bar.update_traces(
+                hovertemplate='<b>%{x}</b><br>Amount: $%{y:.2f}<extra></extra>'
+            )
+            fig_bar.update_layout(
+                xaxis_tickangle=-45,
+                height=400,
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_bar, use_container_width=True, key="category_bar")
+        
+        # Category comparison table
+        st.write("**Category Breakdown**")
+        total_expenses = sum(item[1] for item in sorted_categories)
+        
+        comparison_data = []
+        for category, amount in sorted_categories:
+            percentage = (amount / total_expenses) * 100
+            transaction_count = len([t for t in expenses if t.category == category])
+            avg_per_transaction = amount / transaction_count if transaction_count > 0 else 0
+            
+            comparison_data.append({
+                'Category': category,
+                'Amount': f"${amount:.2f}",
+                'Percentage': f"{percentage:.1f}%",
+                'Transactions': transaction_count,
+                'Avg per Transaction': f"${avg_per_transaction:.2f}"
+            })
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    
+    def _show_enhanced_timeline_charts(self, expenses):
+        """Show enhanced timeline visualization charts."""
+        if not expenses:
+            st.info("No expense data available for timeline analysis.")
+            return
+        
+        # Monthly spending analysis
+        monthly_data = {}
+        daily_data = {}
+        
+        for t in expenses:
+            month_key = t.transaction_date.strftime('%Y-%m')
+            day_key = t.transaction_date.strftime('%Y-%m-%d')
+            amount = abs(t.amount)
+            
+            monthly_data[month_key] = monthly_data.get(month_key, 0) + amount
+            daily_data[day_key] = daily_data.get(day_key, 0) + amount
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Monthly trend
+            if len(monthly_data) > 1:
+                months = sorted(monthly_data.keys())
+                amounts = [monthly_data[month] for month in months]
+                
+                fig_monthly = px.line(
+                    x=months,
+                    y=amounts,
+                    title="Monthly Spending Trend",
+                    labels={'x': 'Month', 'y': 'Amount ($)'},
+                    markers=True
+                )
+                fig_monthly.update_traces(
+                    line=dict(width=3),
+                    marker=dict(size=8),
+                    hovertemplate='<b>%{x}</b><br>Amount: $%{y:.2f}<extra></extra>'
+                )
+                fig_monthly.update_layout(height=400)
+                st.plotly_chart(fig_monthly, use_container_width=True, key="monthly_trend")
+            else:
+                st.info("Need multiple months of data for trend analysis.")
+        
+        with col2:
+            # Daily spending pattern (last 30 days if available)
+            if len(daily_data) > 7:
+                recent_days = sorted(daily_data.keys())[-30:]  # Last 30 days
+                recent_amounts = [daily_data[day] for day in recent_days]
+                
+                fig_daily = px.bar(
+                    x=recent_days,
+                    y=recent_amounts,
+                    title="Daily Spending Pattern (Last 30 Days)",
+                    labels={'x': 'Date', 'y': 'Amount ($)'}
+                )
+                fig_daily.update_traces(
+                    hovertemplate='<b>%{x}</b><br>Amount: $%{y:.2f}<extra></extra>'
+                )
+                fig_daily.update_layout(
+                    xaxis_tickangle=-45,
+                    height=400
+                )
+                st.plotly_chart(fig_daily, use_container_width=True, key="daily_pattern")
+            else:
+                st.info("Need more daily data for pattern analysis.")
+        
+        # Category trends over time
+        if len(monthly_data) > 1:
+            st.write("**Category Trends Over Time**")
+            
+            # Get top 5 categories
+            category_totals = {}
+            for t in expenses:
+                category_totals[t.category] = category_totals.get(t.category, 0) + abs(t.amount)
+            
+            top_categories = sorted(category_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+            
+            # Build monthly data for each category
+            category_monthly_data = {}
+            for category, _ in top_categories:
+                category_monthly_data[category] = {}
+                for t in expenses:
+                    if t.category == category:
+                        month_key = t.transaction_date.strftime('%Y-%m')
+                        category_monthly_data[category][month_key] = (
+                            category_monthly_data[category].get(month_key, 0) + abs(t.amount)
+                        )
+            
+            # Create multi-line chart
+            fig_category_trends = go.Figure()
+            
+            months = sorted(monthly_data.keys())
+            colors = px.colors.qualitative.Set1
+            
+            for i, (category, _) in enumerate(top_categories):
+                amounts = [category_monthly_data[category].get(month, 0) for month in months]
+                fig_category_trends.add_trace(go.Scatter(
+                    x=months,
+                    y=amounts,
+                    mode='lines+markers',
+                    name=category,
+                    line=dict(color=colors[i % len(colors)], width=2),
+                    marker=dict(size=6),
+                    hovertemplate=f'<b>{category}</b><br>%{{x}}<br>Amount: $%{{y:.2f}}<extra></extra>'
+                ))
+            
+            fig_category_trends.update_layout(
+                title="Top Categories Spending Trends",
+                xaxis_title="Month",
+                yaxis_title="Amount ($)",
+                height=400,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig_category_trends, use_container_width=True, key="category_trends")
+    
+    def _show_transaction_analysis_charts(self, expenses):
+        """Show transaction analysis charts."""
+        if not expenses:
+            return
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Amount distribution histogram
+            amounts = [abs(t.amount) for t in expenses]
+            
+            fig_hist = px.histogram(
+                x=amounts,
+                nbins=20,
+                title="Transaction Amount Distribution",
+                labels={'x': 'Amount ($)', 'y': 'Number of Transactions'}
+            )
+            fig_hist.update_traces(
+                hovertemplate='Amount Range: $%{x}<br>Transactions: %{y}<extra></extra>'
+            )
+            fig_hist.update_layout(height=400)
+            st.plotly_chart(fig_hist, use_container_width=True, key="amount_distribution")
+        
+        with col2:
+            # Day of week analysis
+            day_spending = {}
+            day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            
+            for t in expenses:
+                day_name = day_names[t.transaction_date.weekday()]
+                day_spending[day_name] = day_spending.get(day_name, 0) + abs(t.amount)
+            
+            # Ensure all days are present
+            for day in day_names:
+                if day not in day_spending:
+                    day_spending[day] = 0
+            
+            fig_dow = px.bar(
+                x=day_names,
+                y=[day_spending[day] for day in day_names],
+                title="Spending by Day of Week",
+                labels={'x': 'Day of Week', 'y': 'Amount ($)'},
+                color=[day_spending[day] for day in day_names],
+                color_continuous_scale='Blues'
+            )
+            fig_dow.update_traces(
+                hovertemplate='<b>%{x}</b><br>Amount: $%{y:.2f}<extra></extra>'
+            )
+            fig_dow.update_layout(height=400, coloraxis_showscale=False)
+            st.plotly_chart(fig_dow, use_container_width=True, key="day_of_week")
+    
+    def _show_payment_analysis(self, payments):
+        """Show payment analysis charts."""
+        if not payments:
+            return
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Payment amounts over time
+            payment_data = {}
+            for t in payments:
+                month_key = t.transaction_date.strftime('%Y-%m')
+                payment_data[month_key] = payment_data.get(month_key, 0) + t.amount
+            
+            if payment_data:
+                months = sorted(payment_data.keys())
+                amounts = [payment_data[month] for month in months]
+                
+                fig_payments = px.bar(
+                    x=months,
+                    y=amounts,
+                    title="Monthly Payments",
+                    labels={'x': 'Month', 'y': 'Amount ($)'},
+                    color=amounts,
+                    color_continuous_scale='Greens'
+                )
+                fig_payments.update_traces(
+                    hovertemplate='<b>%{x}</b><br>Amount: $%{y:.2f}<extra></extra>'
+                )
+                fig_payments.update_layout(height=400, coloraxis_showscale=False)
+                st.plotly_chart(fig_payments, use_container_width=True, key="monthly_payments")
+        
+        with col2:
+            # Payment summary
+            total_payments = sum(t.amount for t in payments)
+            avg_payment = total_payments / len(payments) if payments else 0
+            largest_payment = max(t.amount for t in payments) if payments else 0
+            
+            st.metric("Total Payments", f"${total_payments:.2f}")
+            st.metric("Average Payment", f"${avg_payment:.2f}")
+            st.metric("Largest Payment", f"${largest_payment:.2f}")
+            st.metric("Number of Payments", len(payments))
+    
+    def _export_charts(self, expenses, format_type):
+        """Export charts in specified format."""
+        try:
+            import plotly.io as pio
+            import base64
+            from io import BytesIO
+            
+            st.info(f"Exporting charts in {format_type} format...")
+            
+            # This is a placeholder for chart export functionality
+            # In a real implementation, you would generate and download the charts
+            st.success(f"Chart export in {format_type} format would be implemented here.")
+            st.info("Note: Full export functionality requires additional implementation for file downloads.")
+            
+        except Exception as e:
+            st.error(f"Export failed: {e}")
+    
+    def _show_data_management_page(self):
+        """Display the data management page for export/import operations."""
+        st.header("💾 Data Management")
+        st.markdown("Export your data for backup or import data from previous exports.")
+        
+        if not st.session_state.transactions:
+            st.info("No transactions found. Upload data first to use export features.")
+            return
+        
+        # Initialize exporters
+        exporter = DataExporter(self.db)
+        importer = DataImporter(self.db)
+        
+        tab1, tab2, tab3 = st.tabs(["📤 Export Data", "📥 Import Data", "📊 Backup & Restore"])
+        
+        with tab1:
+            self._show_export_tab(exporter)
+        
+        with tab2:
+            self._show_import_tab(importer)
+        
+        with tab3:
+            self._show_backup_restore_tab(exporter, importer)
+    
+    def _show_export_tab(self, exporter: DataExporter):
+        """Show the export data interface."""
+        st.subheader("📤 Export Your Data")
+        
+        # Export options
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            export_scope = st.radio(
+                "Export Scope",
+                ["All Transactions", "Filtered Transactions", "Category Statistics Only"],
+                key="export_scope"
+            )
+        
+        with col2:
+            export_format = st.radio(
+                "Export Format",
+                ["CSV", "JSON"],
+                key="export_format"
+            )
+        
+        # Show what will be exported
+        if export_scope == "All Transactions":
+            transactions_to_export = st.session_state.transactions
+            st.info(f"Will export {len(transactions_to_export)} total transactions")
+        elif export_scope == "Filtered Transactions":
+            transactions_to_export = st.session_state.filtered_transactions
+            st.info(f"Will export {len(transactions_to_export)} filtered transactions")
+        else:
+            transactions_to_export = []
+            st.info("Will export category statistics only")
+        
+        # Export buttons
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📥 Generate Export", type="primary", key="generate_export"):
+                try:
+                    if export_scope == "Category Statistics Only":
+                        if export_format == "CSV":
+                            content = exporter.export_category_stats_to_csv()
+                            filename = f"category_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                            content_type = "text/csv"
+                        else:
+                            # JSON export of just category stats
+                            stats_data = {
+                                'metadata': {
+                                    'export_date': datetime.now().isoformat(),
+                                    'version': '1.0',
+                                    'export_type': 'category_statistics',
+                                    'application': 'Personal Expense Tracker'
+                                },
+                                'category_stats': self.db.get_category_stats(),
+                                'categories': self.db.get_categories()
+                            }
+                            content = json.dumps(stats_data, indent=2, ensure_ascii=False)
+                            filename = f"category_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                            content_type = "application/json"
+                    else:
+                        if export_format == "CSV":
+                            content = exporter.export_to_csv(transactions_to_export)
+                            filename = f"transactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                            content_type = "text/csv"
+                        else:
+                            content = exporter.export_to_json(transactions_to_export)
+                            filename = f"transactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                            content_type = "application/json"
+                    
+                    # Store in session state for download
+                    st.session_state.export_content = content
+                    st.session_state.export_filename = filename
+                    st.session_state.export_content_type = content_type
+                    
+                    st.success(f"Export generated successfully! File size: {len(content)} characters")
+                    
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+        
+        with col2:
+            if 'export_content' in st.session_state:
+                # Create download button
+                st.download_button(
+                    label=f"📥 Download {st.session_state.export_filename}",
+                    data=st.session_state.export_content,
+                    file_name=st.session_state.export_filename,
+                    mime=st.session_state.export_content_type,
+                    key="download_export"
+                )
+        
+        with col3:
+            if 'export_content' in st.session_state:
+                if st.button("🗑️ Clear Export", key="clear_export"):
+                    del st.session_state.export_content
+                    del st.session_state.export_filename
+                    del st.session_state.export_content_type
+                    st.rerun()
+        
+        # Preview export content
+        if 'export_content' in st.session_state:
+            st.subheader("📋 Export Preview")
+            
+            # Show first few lines of export
+            content_lines = st.session_state.export_content.split('\n')
+            preview_lines = content_lines[:10]
+            
+            st.code('\n'.join(preview_lines), language='text')
+            
+            if len(content_lines) > 10:
+                st.write(f"... and {len(content_lines) - 10} more lines")
+    
+    def _show_import_tab(self, importer: DataImporter):
+        """Show the import data interface."""
+        st.subheader("📥 Import Data")
+        st.markdown("Import transaction data from previous exports (JSON format only).")
+        
+        # File upload
+        uploaded_file = st.file_uploader(
+            "Choose a JSON export file",
+            type=['json'],
+            help="Upload a JSON file exported from this application",
+            key="import_file"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Read file content
+                json_content = uploaded_file.read().decode('utf-8')
+                
+                # Validate import data
+                validation_result = importer.validate_json_import(json_content)
+                
+                st.subheader("📋 Import Validation")
+                
+                if validation_result['valid']:
+                    st.success("✅ Import file is valid!")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric("Total Transactions", validation_result['total_transactions'])
+                        st.metric("Valid Transactions", validation_result['valid_transactions'])
+                    
+                    with col2:
+                        st.metric("Categories Found", len(validation_result['categories_found']))
+                        if validation_result.get('has_category_stats'):
+                            st.info("✅ Includes category statistics")
+                    
+                    # Show metadata if available
+                    if validation_result.get('metadata'):
+                        st.write("**Export Metadata:**")
+                        metadata = validation_result['metadata']
+                        for key, value in metadata.items():
+                            st.write(f"- **{key.replace('_', ' ').title()}**: {value}")
+                    
+                    # Show categories
+                    if validation_result['categories_found']:
+                        st.write("**Categories in import:**")
+                        st.write(", ".join(validation_result['categories_found']))
+                    
+                    # Import button
+                    if st.button("📥 Import Transactions", type="primary", key="import_transactions"):
+                        try:
+                            with st.spinner("Importing transactions..."):
+                                import_result = importer.import_from_json(json_content)
+                            
+                            st.success("Import completed!")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Imported", import_result['imported'])
+                            with col2:
+                                st.metric("Duplicates Skipped", import_result['duplicates'])
+                            with col3:
+                                st.metric("Errors", import_result['errors'])
+                            
+                            if import_result['imported'] > 0:
+                                st.info("Please refresh the page to see imported transactions.")
+                                if st.button("🔄 Refresh Page", key="refresh_after_import"):
+                                    st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Import failed: {e}")
+                
+                else:
+                    st.error("❌ Import file validation failed!")
+                    if 'error' in validation_result:
+                        st.error(validation_result['error'])
+                    if 'warning' in validation_result:
+                        st.warning(validation_result['warning'])
+                    
+                    if validation_result['invalid_transactions'] > 0:
+                        st.write(f"Found {validation_result['invalid_transactions']} invalid transactions")
+                
+            except Exception as e:
+                st.error(f"Failed to process import file: {e}")
+    
+    def _show_backup_restore_tab(self, exporter: DataExporter, importer: DataImporter):
+        """Show backup and restore interface."""
+        st.subheader("📊 Backup & Restore")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**🔄 Create Full Backup**")
+            st.write("Create a complete backup of all your data including transactions, categories, and statistics.")
+            
+            if st.button("📦 Create Full Backup", type="primary", key="create_backup"):
+                try:
+                    # Create comprehensive backup
+                    backup_data = exporter.export_to_json(pretty=True)
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"expense_tracker_backup_{timestamp}.json"
+                    
+                    st.session_state.backup_content = backup_data
+                    st.session_state.backup_filename = filename
+                    
+                    st.success("Backup created successfully!")
+                    
+                except Exception as e:
+                    st.error(f"Backup creation failed: {e}")
+            
+            if 'backup_content' in st.session_state:
+                st.download_button(
+                    label=f"📥 Download {st.session_state.backup_filename}",
+                    data=st.session_state.backup_content,
+                    file_name=st.session_state.backup_filename,
+                    mime="application/json",
+                    key="download_backup"
+                )
+        
+        with col2:
+            st.write("**📂 Restore from Backup**")
+            st.write("Restore data from a previous backup file.")
+            
+            backup_file = st.file_uploader(
+                "Choose backup file",
+                type=['json'],
+                help="Upload a backup JSON file",
+                key="restore_file"
+            )
+            
+            if backup_file is not None:
+                try:
+                    backup_content = backup_file.read().decode('utf-8')
+                    validation = importer.validate_json_import(backup_content)
+                    
+                    if validation['valid']:
+                        st.success(f"✅ Valid backup with {validation['total_transactions']} transactions")
+                        
+                        st.warning("⚠️ This will add transactions to your existing data. Duplicates will be skipped.")
+                        
+                        if st.button("🔄 Restore from Backup", key="restore_backup"):
+                            try:
+                                result = importer.import_from_json(backup_content)
+                                st.success(f"Restored {result['imported']} transactions!")
+                                
+                                if st.button("🔄 Refresh Page", key="refresh_after_restore"):
+                                    st.rerun()
+                                    
+                            except Exception as e:
+                                st.error(f"Restore failed: {e}")
+                    else:
+                        st.error("❌ Invalid backup file")
+                        
+                except Exception as e:
+                    st.error(f"Failed to read backup file: {e}")
+        
+        # Database statistics
+        st.subheader("📈 Database Statistics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Transactions", len(st.session_state.transactions))
+        
+        with col2:
+            st.metric("Categories", len(st.session_state.categories))
+        
+        with col3:
+            expenses = [t for t in st.session_state.transactions if t.is_expense()]
+            st.metric("Expenses", len(expenses))
+        
+        with col4:
+            payments = [t for t in st.session_state.transactions if t.is_payment()]
+            st.metric("Payments", len(payments))
+    
+    def _show_performance_page(self):
+        """Display performance monitoring and optimization page."""
+        st.header("⚡ Performance Monitoring")
+        st.markdown("Monitor application performance and optimize for large datasets.")
+        
+        # Dataset information
+        st.subheader("📊 Dataset Information")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_count = st.session_state.get('total_transaction_count', len(st.session_state.transactions))
+            st.metric("Total Transactions", total_count)
+        
+        with col2:
+            loaded_count = len(st.session_state.transactions)
+            st.metric("Loaded in Memory", loaded_count)
+        
+        with col3:
+            filtered_count = len(st.session_state.filtered_transactions)
+            st.metric("Currently Filtered", filtered_count)
+        
+        with col4:
+            is_large = st.session_state.get('large_dataset', False)
+            st.metric("Large Dataset Mode", "Yes" if is_large else "No")
+        
+        # Performance recommendations
+        st.subheader("💡 Performance Recommendations")
+        
+        total_count = st.session_state.get('total_transaction_count', 0)
+        
+        if total_count > 5000:
+            st.error("⚠️ Very large dataset detected (5000+ transactions)")
+            st.write("**Recommendations:**")
+            st.write("- Use date filters to reduce data load")
+            st.write("- Consider archiving old transactions")
+            st.write("- Use export/import for data management")
+        elif total_count > 1000:
+            st.warning("⚠️ Large dataset detected (1000+ transactions)")
+            st.write("**Recommendations:**")
+            st.write("- Charts and tables are optimized automatically")
+            st.write("- Use filters to focus on specific time periods")
+        else:
+            st.success("✅ Dataset size is optimal for performance")
+        
+        # Performance metrics
+        show_performance_metrics()
+        
+        # Cache management
+        st.subheader("🗄️ Cache Management")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🗑️ Clear Cache", key="clear_cache"):
+                StreamlitCache.clear_all_cache()
+                st.success("Cache cleared successfully!")
+                st.info("Refresh the page to reload data.")
+        
+        with col2:
+            if st.button("🔄 Reload Data", key="reload_data"):
+                StreamlitCache.clear_all_cache()
+                st.rerun()
+        
+        # Database optimization
+        st.subheader("🔧 Database Optimization")
+        
+        if st.button("📊 Analyze Database", key="analyze_db"):
+            try:
+                with st.spinner("Analyzing database performance..."):
+                    # Run ANALYZE command to update statistics
+                    import sqlite3
+                    with sqlite3.connect(self.db.db_path) as conn:
+                        conn.execute("ANALYZE")
+                        
+                        # Get database size
+                        cursor = conn.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+                        db_size = cursor.fetchone()[0]
+                        
+                        # Get index information
+                        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")
+                        indexes = [row[0] for row in cursor.fetchall()]
+                
+                st.success("Database analysis completed!")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Database Size", f"{db_size / 1024 / 1024:.2f} MB")
+                with col2:
+                    st.metric("Indexes", len(indexes))
+                
+                if indexes:
+                    st.write("**Active Indexes:**")
+                    for idx in indexes:
+                        st.write(f"- {idx}")
+                
+            except Exception as e:
+                st.error(f"Database analysis failed: {e}")
+        
+        # Memory usage (approximate)
+        st.subheader("💾 Memory Usage")
+        
+        import sys
+        
+        transactions_size = sys.getsizeof(st.session_state.transactions) / 1024 / 1024
+        filtered_size = sys.getsizeof(st.session_state.filtered_transactions) / 1024 / 1024
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Transactions Memory", f"{transactions_size:.2f} MB")
+        with col2:
+            st.metric("Filtered Memory", f"{filtered_size:.2f} MB")
+        
+        if transactions_size > 50:
+            st.warning("⚠️ High memory usage detected. Consider using filters or pagination.")
+    
+    @safe_operation("transaction import", show_spinner=False)
+    def _import_transactions_with_progress(self, transactions):
+        """Import transactions with progress tracking and error handling."""
+        if not transactions:
+            show_warning_message("No transactions to import")
+            return
+        
+        # Create progress tracker
+        progress = ProgressTracker(len(transactions) + 2, "Importing Transactions")
+        
+        try:
+            # Step 1: Validate transactions
+            progress.update(1, "Validating transaction data...")
+            
+            valid_transactions = []
+            invalid_count = 0
+            
+            for i, transaction in enumerate(transactions):
+                try:
+                    # Basic validation
+                    if not transaction.description.strip():
+                        invalid_count += 1
+                        continue
+                    if transaction.amount == 0:
+                        invalid_count += 1
+                        continue
+                    
+                    valid_transactions.append(transaction)
+                    
+                    # Update progress every 100 transactions
+                    if i % 100 == 0:
+                        progress.update(1, f"Validated {i + 1} of {len(transactions)} transactions...")
+                
+                except Exception as e:
+                    self.logger.warning(f"Invalid transaction skipped: {e}")
+                    invalid_count += 1
+            
+            if invalid_count > 0:
+                show_warning_message(f"Skipped {invalid_count} invalid transactions")
+            
+            if not valid_transactions:
+                progress.error("No valid transactions found")
+                return
+            
+            # Step 2: Insert transactions
+            progress.update(len(transactions) + 1, f"Inserting {len(valid_transactions)} transactions...")
+            
+            transaction_ids = self.db.insert_transactions_batch(valid_transactions)
+            
+            # Step 3: Complete
+            progress.complete(f"Successfully imported {len(transaction_ids)} transactions!")
+            
+            # Show summary
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Imported", len(transaction_ids))
+            with col2:
+                st.metric("Skipped (Invalid)", invalid_count)
+            with col3:
+                st.metric("Total Processed", len(transactions))
+            
+            # Offer to refresh
+            if st.button("🔄 Refresh to See New Data", key="refresh_after_import"):
+                st.rerun()
+        
+        except Exception as e:
+            progress.error(str(e))
+            error_handler.handle_database_error(e, "transaction import")
+    
+    @safe_operation("category update")
+    def _update_category_safe(self, transaction_id: int, new_category: str):
+        """Safely update transaction category with error handling."""
+        if not validate_user_input(new_category, "required_text", "Category"):
+            return False
+        
+        success = self.db.update_transaction_category(transaction_id, new_category)
+        
+        if success:
+            show_success_message(f"Category updated to '{new_category}'")
+            return True
+        else:
+            st.error("❌ Failed to update category")
+            st.info("**Solution:** Please try again or check if the transaction still exists.")
+            return False
+    
+    @safe_operation("bulk category update", show_spinner=False)
+    def _bulk_update_categories_with_progress(self, transactions, new_category: str):
+        """Bulk update categories with progress tracking."""
+        if not transactions:
+            show_warning_message("No transactions selected for update")
+            return
+        
+        if not validate_user_input(new_category, "required_text", "New Category"):
+            return
+        
+        # Create progress tracker
+        progress = ProgressTracker(len(transactions), "Bulk Category Update")
+        
+        try:
+            updated_count = 0
+            failed_count = 0
+            
+            for i, transaction in enumerate(transactions):
+                try:
+                    if self.db.update_transaction_category(transaction.id, new_category):
+                        updated_count += 1
+                    else:
+                        failed_count += 1
+                    
+                    # Update progress every 10 transactions
+                    if i % 10 == 0 or i == len(transactions) - 1:
+                        progress.update(i + 1, f"Updated {updated_count} of {i + 1} transactions...")
+                
+                except Exception as e:
+                    self.logger.warning(f"Failed to update transaction {transaction.id}: {e}")
+                    failed_count += 1
+            
+            # Complete with summary
+            if updated_count > 0:
+                progress.complete(f"Updated {updated_count} transactions to '{new_category}'")
+                
+                if failed_count > 0:
+                    show_warning_message(f"{failed_count} transactions could not be updated")
+                
+                # Show summary
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Successfully Updated", updated_count)
+                with col2:
+                    st.metric("Failed", failed_count)
+                
+                return True
+            else:
+                progress.error("No transactions were updated")
+                return False
+        
+        except Exception as e:
+            progress.error(str(e))
+            error_handler.handle_database_error(e, "bulk category update")
+            return False

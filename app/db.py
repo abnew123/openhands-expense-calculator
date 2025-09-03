@@ -10,8 +10,14 @@ from app.models import Transaction
 class DatabaseManager:
     """Manages SQLite database operations for expense tracking."""
     
-    def __init__(self, db_path: str = "expenses.db"):
+    def __init__(self, db_path: str = None):
         """Initialize database manager with specified database path."""
+        if db_path is None:
+            # Use data directory for persistence in containers
+            data_dir = Path("data")
+            data_dir.mkdir(exist_ok=True)
+            db_path = str(data_dir / "expenses.db")
+        
         self.db_path = db_path
         self.logger = logging.getLogger(__name__)
         self._init_database()
@@ -39,6 +45,10 @@ class DatabaseManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_transaction_date ON transactions(transaction_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON transactions(category)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_amount ON transactions(amount)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_type ON transactions(transaction_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_description ON transactions(description)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_date_category ON transactions(transaction_date, category)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_date_amount ON transactions(transaction_date, amount)")
                 
                 conn.commit()
                 self.logger.info(f"Database initialized at {self.db_path}")
@@ -352,4 +362,224 @@ class DatabaseManager:
                 return stats
         except sqlite3.Error as e:
             self.logger.error(f"Failed to get category stats: {e}")
+            raise
+    
+    def export_transactions_to_dict(self, transactions: List[Transaction] = None) -> Dict[str, Any]:
+        """Export transactions to dictionary format for JSON export."""
+        if transactions is None:
+            transactions = self.get_all_transactions()
+        
+        export_data = {
+            'metadata': {
+                'export_date': datetime.now().isoformat(),
+                'version': '1.0',
+                'total_transactions': len(transactions),
+                'application': 'Personal Expense Tracker'
+            },
+            'transactions': [t.to_dict() for t in transactions],
+            'categories': self.get_categories(),
+            'category_stats': self.get_category_stats()
+        }
+        
+        return export_data
+    
+    def import_transactions_from_dict(self, import_data: Dict[str, Any]) -> Dict[str, int]:
+        """Import transactions from dictionary format (JSON import)."""
+        try:
+            # Validate import data structure
+            if 'transactions' not in import_data:
+                raise ValueError("Invalid import data: missing 'transactions' key")
+            
+            transactions_data = import_data['transactions']
+            imported_count = 0
+            duplicate_count = 0
+            error_count = 0
+            
+            for transaction_dict in transactions_data:
+                try:
+                    # Create transaction from dict
+                    transaction = Transaction.from_dict(transaction_dict)
+                    
+                    # Check for duplicates
+                    if not self.transaction_exists(transaction):
+                        self.insert_transaction(transaction)
+                        imported_count += 1
+                    else:
+                        duplicate_count += 1
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to import transaction: {e}")
+                    error_count += 1
+                    continue
+            
+            self.logger.info(f"Import completed: {imported_count} imported, {duplicate_count} duplicates, {error_count} errors")
+            
+            return {
+                'imported': imported_count,
+                'duplicates': duplicate_count,
+                'errors': error_count,
+                'total_processed': len(transactions_data)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to import transactions: {e}")
+            raise
+    
+    def get_transactions_paginated(self, page: int = 1, page_size: int = 50, 
+                                 order_by: str = "transaction_date", 
+                                 order_desc: bool = True) -> List[Transaction]:
+        """Get transactions with pagination for better performance."""
+        try:
+            offset = (page - 1) * page_size
+            order_direction = "DESC" if order_desc else "ASC"
+            
+            # Validate order_by column to prevent SQL injection
+            valid_columns = ['transaction_date', 'post_date', 'description', 'category', 'transaction_type', 'amount']
+            if order_by not in valid_columns:
+                order_by = 'transaction_date'
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(f"""
+                    SELECT * FROM transactions 
+                    ORDER BY {order_by} {order_direction}, id DESC
+                    LIMIT ? OFFSET ?
+                """, (page_size, offset))
+                rows = cursor.fetchall()
+                
+                transactions = []
+                for row in rows:
+                    transaction = Transaction.from_dict(dict(row))
+                    transactions.append(transaction)
+                
+                return transactions
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to retrieve paginated transactions: {e}")
+            raise
+    
+    def search_transactions(self, search_term: str, limit: int = 100) -> List[Transaction]:
+        """Search transactions by description, category, or memo with optimized query."""
+        try:
+            search_pattern = f"%{search_term.lower()}%"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM transactions 
+                    WHERE LOWER(description) LIKE ? 
+                       OR LOWER(category) LIKE ? 
+                       OR LOWER(memo) LIKE ?
+                    ORDER BY transaction_date DESC, id DESC
+                    LIMIT ?
+                """, (search_pattern, search_pattern, search_pattern, limit))
+                rows = cursor.fetchall()
+                
+                transactions = []
+                for row in rows:
+                    transaction = Transaction.from_dict(dict(row))
+                    transactions.append(transaction)
+                
+                self.logger.info(f"Found {len(transactions)} transactions matching '{search_term}'")
+                return transactions
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to search transactions: {e}")
+            raise
+    
+    def get_transactions_by_filters(self, start_date: datetime = None, end_date: datetime = None,
+                                  categories: List[str] = None, transaction_types: List[str] = None,
+                                  min_amount: float = None, max_amount: float = None,
+                                  limit: int = 1000) -> List[Transaction]:
+        """Get transactions with multiple filters using optimized query."""
+        try:
+            query_parts = ["SELECT * FROM transactions WHERE 1=1"]
+            params = []
+            
+            # Date range filter
+            if start_date:
+                query_parts.append("AND transaction_date >= ?")
+                params.append(start_date.isoformat())
+            
+            if end_date:
+                query_parts.append("AND transaction_date <= ?")
+                params.append(end_date.isoformat())
+            
+            # Category filter
+            if categories:
+                placeholders = ','.join(['?' for _ in categories])
+                query_parts.append(f"AND category IN ({placeholders})")
+                params.extend(categories)
+            
+            # Transaction type filter
+            if transaction_types:
+                placeholders = ','.join(['?' for _ in transaction_types])
+                query_parts.append(f"AND transaction_type IN ({placeholders})")
+                params.extend(transaction_types)
+            
+            # Amount range filter
+            if min_amount is not None:
+                query_parts.append("AND ABS(amount) >= ?")
+                params.append(min_amount)
+            
+            if max_amount is not None:
+                query_parts.append("AND ABS(amount) <= ?")
+                params.append(max_amount)
+            
+            # Add ordering and limit
+            query_parts.append("ORDER BY transaction_date DESC, id DESC LIMIT ?")
+            params.append(limit)
+            
+            query = " ".join(query_parts)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(query, params)
+                rows = cursor.fetchall()
+                
+                transactions = []
+                for row in rows:
+                    transaction = Transaction.from_dict(dict(row))
+                    transactions.append(transaction)
+                
+                self.logger.info(f"Retrieved {len(transactions)} filtered transactions")
+                return transactions
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to retrieve filtered transactions: {e}")
+            raise
+    
+    def get_category_stats_optimized(self) -> Dict[str, Dict[str, Any]]:
+        """Get category statistics with optimized single query."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT 
+                        category,
+                        COUNT(*) as transaction_count,
+                        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as total_expenses,
+                        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_income,
+                        SUM(amount) as net_amount,
+                        MIN(transaction_date) as first_transaction,
+                        MAX(transaction_date) as last_transaction,
+                        AVG(CASE WHEN amount < 0 THEN ABS(amount) ELSE NULL END) as avg_expense,
+                        MAX(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as max_expense
+                    FROM transactions 
+                    GROUP BY category
+                    ORDER BY total_expenses DESC
+                """)
+                
+                stats = {}
+                for row in cursor.fetchall():
+                    stats[row[0]] = {
+                        'transaction_count': row[1],
+                        'total_expenses': row[2] if row[2] else 0,
+                        'total_income': row[3] if row[3] else 0,
+                        'net_amount': row[4],
+                        'first_transaction': row[5],
+                        'last_transaction': row[6],
+                        'avg_expense': row[7] if row[7] else 0,
+                        'max_expense': row[8] if row[8] else 0
+                    }
+                
+                return stats
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to get optimized category stats: {e}")
             raise
