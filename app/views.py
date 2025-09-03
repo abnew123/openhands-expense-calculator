@@ -153,7 +153,9 @@ class ExpenseTrackerUI:
         recent_transactions = sorted(transactions_to_show, key=lambda t: t.transaction_date, reverse=True)[:10]
         if recent_transactions:
             df = self._transactions_to_dataframe(recent_transactions)
-            st.dataframe(df, use_container_width=True)
+            # Remove Select and ID columns for dashboard display
+            display_df = df.drop(columns=['Select', 'ID'])
+            st.dataframe(display_df, use_container_width=True)
         
         # Quick category breakdown
         if expenses:
@@ -767,34 +769,94 @@ class ExpenseTrackerUI:
         df = self._transactions_to_dataframe(transactions)
         
         if not df.empty:
-            # Display the dataframe with enhanced formatting
-            st.dataframe(
+            # Add selection column and display with data_editor for row selection
+            st.write("**💡 Tip:** Check the boxes in the first column to select transactions for editing or deletion.")
+            
+            edited_df = st.data_editor(
                 df,
                 use_container_width=True,
                 column_config={
+                    "Select": st.column_config.CheckboxColumn(
+                        "Select",
+                        help="Select transactions for bulk operations",
+                        default=False,
+                        width="small"
+                    ),
                     "Amount": st.column_config.NumberColumn(
                         "Amount",
-                        format="$%.2f"
+                        format="$%.2f",
+                        disabled=True
                     ),
                     "Date": st.column_config.DateColumn(
                         "Date",
-                        format="YYYY-MM-DD"
+                        format="YYYY-MM-DD",
+                        disabled=True
                     ),
                     "Description": st.column_config.TextColumn(
                         "Description",
-                        width="large"
+                        width="large",
+                        disabled=True
                     ),
-                    "Category": st.column_config.TextColumn(
+                    "Category": st.column_config.SelectboxColumn(
                         "Category",
-                        width="medium"
+                        options=st.session_state.categories,
+                        help="Edit category directly in the table"
                     ),
                     "Type": st.column_config.TextColumn(
                         "Type",
+                        disabled=True,
+                        width="small"
+                    ),
+                    "ID": st.column_config.NumberColumn(
+                        "ID",
+                        disabled=True,
                         width="small"
                     )
                 },
-                hide_index=True
+                hide_index=True,
+                key="transaction_editor"
             )
+            
+            # Handle selection changes
+            if edited_df is not None:
+                # Get selected transaction IDs
+                selected_rows = edited_df[edited_df['Select'] == True]
+                selected_ids = selected_rows['ID'].tolist() if not selected_rows.empty else []
+                
+                # Store selected transactions in session state
+                st.session_state.selected_transactions = selected_ids
+                
+                # Handle category changes
+                category_changes = []
+                for index, row in edited_df.iterrows():
+                    original_category = df.iloc[index]['Category']
+                    new_category = row['Category']
+                    
+                    if original_category != new_category:
+                        category_changes.append({
+                            'id': row['ID'],
+                            'old_category': original_category,
+                            'new_category': new_category
+                        })
+                
+                # Apply category changes
+                if category_changes:
+                    for change in category_changes:
+                        success = self.db.update_transaction_category(change['id'], change['new_category'])
+                        if success:
+                            st.success(f"✅ Updated category for transaction {change['id']} to '{change['new_category']}'")
+                        else:
+                            st.error(f"❌ Failed to update category for transaction {change['id']}")
+                    
+                    # Reload data to reflect changes
+                    self._load_data()
+                    st.experimental_rerun()
+                
+                # Show selection summary
+                if selected_ids:
+                    st.info(f"📋 Selected {len(selected_ids)} transactions for bulk operations")
+                else:
+                    st.info("💡 Select transactions using the checkboxes to enable bulk operations")
         else:
             st.info("No transactions match your search criteria.")
         
@@ -899,8 +961,10 @@ class ExpenseTrackerUI:
                     if matching_transactions:
                         # Show preview of matching transactions
                         preview_df = self._transactions_to_dataframe(matching_transactions[:5])
+                        # Remove Select and ID columns for preview
+                        display_preview_df = preview_df.drop(columns=['Select', 'ID'])
                         st.write("Preview (showing first 5):")
-                        st.dataframe(preview_df, use_container_width=True)
+                        st.dataframe(display_preview_df, use_container_width=True)
                         
                         if len(matching_transactions) > 5:
                             st.write(f"... and {len(matching_transactions) - 5} more")
@@ -959,6 +1023,8 @@ class ExpenseTrackerUI:
             amount_display = float(t.amount)
             
             data.append({
+                'Select': False,  # Default selection state
+                'ID': t.id,  # Include transaction ID for operations
                 'Date': t.transaction_date.date(),
                 'Description': t.description[:60] + ('...' if len(t.description) > 60 else ''),
                 'Category': t.category,
@@ -970,7 +1036,7 @@ class ExpenseTrackerUI:
         df = pd.DataFrame(data)
         
         # Reorder columns for better display
-        column_order = ['Date', 'Description', 'Category', 'Type', 'Amount', 'Memo']
+        column_order = ['Select', 'ID', 'Date', 'Description', 'Category', 'Type', 'Amount', 'Memo']
         df = df[column_order]
         
         return df
@@ -1081,19 +1147,119 @@ class ExpenseTrackerUI:
         # Category management actions
         st.subheader("🛠️ Category Actions")
         
-        tab1, tab2, tab3, tab4 = st.tabs(["Rename Category", "Merge Categories", "Delete Category", "Auto-Categorize"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Create Category", "Rename Category", "Merge Categories", "Delete Category", "Auto-Categorize"])
         
         with tab1:
-            self._show_rename_category_tab(category_stats)
+            self._show_create_category_tab()
         
         with tab2:
-            self._show_merge_categories_tab(category_stats)
+            self._show_rename_category_tab(category_stats)
         
         with tab3:
-            self._show_delete_category_tab(category_stats)
+            self._show_merge_categories_tab(category_stats)
         
         with tab4:
+            self._show_delete_category_tab(category_stats)
+        
+        with tab5:
             self._show_auto_categorize_tab()
+    
+    def _show_create_category_tab(self):
+        """Show the create category interface."""
+        st.write("**Create a new category**")
+        st.info("Create new categories that can be used when editing transactions or setting up category hierarchies.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_category_name = st.text_input(
+                "Category Name",
+                placeholder="Enter new category name...",
+                key="new_category_name"
+            )
+            
+            # Option to set parent category
+            existing_categories = self.db.get_categories()
+            hierarchy = self.db.get_category_hierarchy()
+            
+            parent_options = ["None (Root Category)"] + existing_categories
+            parent_category = st.selectbox(
+                "Parent Category (Optional)",
+                parent_options,
+                help="Select a parent category to create a hierarchical relationship",
+                key="new_category_parent"
+            )
+        
+        with col2:
+            st.write("**Category Preview:**")
+            if new_category_name:
+                if parent_category != "None (Root Category)":
+                    st.write(f"📁 {parent_category}")
+                    st.write(f"  └── **{new_category_name}** *(new)*")
+                else:
+                    st.write(f"📁 **{new_category_name}** *(new root category)*")
+            else:
+                st.write("*Enter a category name to see preview*")
+        
+        # Validation and creation
+        if new_category_name:
+            # Check if category already exists
+            if self.db.category_exists(new_category_name):
+                st.warning(f"⚠️ Category '{new_category_name}' already exists")
+            else:
+                if st.button("✅ Create Category", type="primary", key="create_category_btn"):
+                    parent = None if parent_category == "None (Root Category)" else parent_category
+                    
+                    success = self.db.create_category(new_category_name, parent)
+                    
+                    if success:
+                        st.success(f"✅ Created category '{new_category_name}'")
+                        
+                        # Show next steps
+                        st.info("**Next steps:**")
+                        st.write("• Use this category when editing transactions")
+                        st.write("• Set up auto-categorization rules")
+                        st.write("• Create subcategories under this category")
+                        
+                        # Clear the input
+                        if st.button("🔄 Create Another Category", key="create_another"):
+                            st.experimental_rerun()
+                    else:
+                        st.error("❌ Failed to create category")
+        else:
+            st.info("👆 Enter a category name above to create it")
+        
+        # Show existing categories for reference
+        if existing_categories:
+            with st.expander("📋 Existing Categories", expanded=False):
+                col1, col2 = st.columns(2)
+                
+                # Split categories into two columns
+                mid_point = len(existing_categories) // 2
+                
+                with col1:
+                    for category in existing_categories[:mid_point]:
+                        # Show hierarchy path if available
+                        if category in hierarchy:
+                            path = self.db.get_category_path(category)
+                            if len(path) > 1:
+                                st.write(f"📁 {' → '.join(path)}")
+                            else:
+                                st.write(f"📁 {category}")
+                        else:
+                            st.write(f"📁 {category}")
+                
+                with col2:
+                    for category in existing_categories[mid_point:]:
+                        # Show hierarchy path if available
+                        if category in hierarchy:
+                            path = self.db.get_category_path(category)
+                            if len(path) > 1:
+                                st.write(f"📁 {' → '.join(path)}")
+                            else:
+                                st.write(f"📁 {category}")
+                        else:
+                            st.write(f"📁 {category}")
     
     def _show_rename_category_tab(self, category_stats):
         """Show the rename category interface."""

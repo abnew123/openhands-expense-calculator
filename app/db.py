@@ -97,6 +97,40 @@ class DatabaseManager:
         """Insert multiple transactions in a batch operation."""
         if not transactions:
             return []
+    
+    def create_category(self, category_name: str, parent_category: str = None) -> bool:
+        """Create a new category and optionally add it to hierarchy."""
+        try:
+            # Add to hierarchy table if it doesn't exist
+            success = self.add_category_hierarchy(category_name, parent_category)
+            
+            if success:
+                self.logger.info(f"Created new category: '{category_name}' with parent '{parent_category}'")
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to create category: {e}")
+            return False
+    
+    def category_exists(self, category_name: str) -> bool:
+        """Check if a category exists in transactions or hierarchy."""
+        try:
+            # Check if category exists in transactions
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (category_name,))
+                transaction_count = cursor.fetchone()[0]
+                
+                if transaction_count > 0:
+                    return True
+                
+                # Check if category exists in hierarchy
+                cursor = conn.execute("SELECT COUNT(*) FROM category_hierarchy WHERE category_name = ?", (category_name,))
+                hierarchy_count = cursor.fetchone()[0]
+                
+                return hierarchy_count > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to check category existence: {e}")
+            return False
         
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -913,6 +947,88 @@ class DatabaseManager:
             self.logger.error(f"Failed to get category children: {e}")
             return []
     
+    def create_category(self, category_name: str, parent_category: str = None) -> bool:
+        """Create a new category and optionally add it to hierarchy."""
+        try:
+            # Add to hierarchy table if it doesn't exist
+            success = self.add_category_hierarchy(category_name, parent_category)
+            
+            if success:
+                self.logger.info(f"Created new category: '{category_name}' with parent '{parent_category}'")
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to create category: {e}")
+            return False
+    
+    def category_exists(self, category_name: str) -> bool:
+        """Check if a category exists in transactions or hierarchy."""
+        try:
+            # Check if category exists in transactions
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (category_name,))
+                transaction_count = cursor.fetchone()[0]
+                
+                if transaction_count > 0:
+                    return True
+                
+                # Check if category exists in hierarchy
+                cursor = conn.execute("SELECT COUNT(*) FROM category_hierarchy WHERE category_name = ?", (category_name,))
+                hierarchy_count = cursor.fetchone()[0]
+                
+                return hierarchy_count > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to check category existence: {e}")
+            return False
+            
+            children = []
+            
+            def collect_children(cat_name):
+                if cat_name in hierarchy:
+                    for child in hierarchy[cat_name]['children']:
+                        children.append(child)
+                        collect_children(child)
+            
+            collect_children(category_name)
+            return children
+        except Exception as e:
+            self.logger.error(f"Failed to get category children: {e}")
+            return []
+    
+    def create_category(self, category_name: str, parent_category: str = None) -> bool:
+        """Create a new category and optionally add it to hierarchy."""
+        try:
+            # Add to hierarchy table if it doesn't exist
+            success = self.add_category_hierarchy(category_name, parent_category)
+            
+            if success:
+                self.logger.info(f"Created new category: '{category_name}' with parent '{parent_category}'")
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to create category: {e}")
+            return False
+    
+    def category_exists(self, category_name: str) -> bool:
+        """Check if a category exists in transactions or hierarchy."""
+        try:
+            # Check if category exists in transactions
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (category_name,))
+                transaction_count = cursor.fetchone()[0]
+                
+                if transaction_count > 0:
+                    return True
+                
+                # Check if category exists in hierarchy
+                cursor = conn.execute("SELECT COUNT(*) FROM category_hierarchy WHERE category_name = ?", (category_name,))
+                hierarchy_count = cursor.fetchone()[0]
+                
+                return hierarchy_count > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to check category existence: {e}")
+            return False
+    
     def get_transactions_by_category_hierarchy(self, category_name: str, include_children: bool = True) -> List[Transaction]:
         """Get transactions for a category and optionally its children."""
         try:
@@ -939,3 +1055,37 @@ class DatabaseManager:
         except sqlite3.Error as e:
             self.logger.error(f"Failed to get transactions by category hierarchy: {e}")
             return []
+    
+    def create_category(self, category_name: str, parent_category: str = None) -> bool:
+        """Create a new category and optionally add it to hierarchy."""
+        try:
+            # Add to hierarchy table if it doesn't exist
+            success = self.add_category_hierarchy(category_name, parent_category)
+            
+            if success:
+                self.logger.info(f"Created new category: '{category_name}' with parent '{parent_category}'")
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to create category: {e}")
+            return False
+    
+    def category_exists(self, category_name: str) -> bool:
+        """Check if a category exists in transactions or hierarchy."""
+        try:
+            # Check if category exists in transactions
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM transactions WHERE category = ?", (category_name,))
+                transaction_count = cursor.fetchone()[0]
+                
+                if transaction_count > 0:
+                    return True
+                
+                # Check if category exists in hierarchy
+                cursor = conn.execute("SELECT COUNT(*) FROM category_hierarchy WHERE category_name = ?", (category_name,))
+                hierarchy_count = cursor.fetchone()[0]
+                
+                return hierarchy_count > 0
+        except sqlite3.Error as e:
+            self.logger.error(f"Failed to check category existence: {e}")
+            return False

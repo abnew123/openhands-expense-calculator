@@ -72,6 +72,21 @@ class CSVParser:
                 },
                 'date_format': '%m/%d/%Y'
             },
+            'wells_fargo_headerless': {
+                'name': 'Wells Fargo (No Headers)',
+                'required_columns': [],  # No headers to check
+                'column_mapping': {
+                    'transaction_date': 0,  # First column (index)
+                    'post_date': 0,  # Use same date for both
+                    'description': 2,  # Third column (index)
+                    'category': None,  # Will be set to 'Uncategorized'
+                    'transaction_type': None,  # Will be determined from amount
+                    'amount': 1,  # Second column (index)
+                    'memo': None
+                },
+                'date_format': '%m/%d/%Y',
+                'headerless': True
+            },
             'capital_one': {
                 'name': 'Capital One',
                 'required_columns': ['Transaction Date', 'Posted Date', 'Card No.', 'Description', 'Category', 'Debit', 'Credit'],
@@ -138,6 +153,20 @@ class CSVParser:
                 format_spec = self.formats[format_type.lower()]
                 result['expected_columns'] = format_spec['required_columns']
                 result['detected_format'] = format_type.lower()
+                
+                # Handle headerless formats
+                if format_spec.get('headerless', False):
+                    # For headerless formats, validate by checking column count and data patterns
+                    expected_columns = len([k for k, v in format_spec['column_mapping'].items() if v is not None and isinstance(v, int)])
+                    actual_columns = len(df.columns)
+                    
+                    if actual_columns >= expected_columns:
+                        result['valid'] = True
+                        result['expected_columns'] = [f"Column {i}" for i in range(expected_columns)]
+                    else:
+                        result['error_message'] = f"Expected at least {expected_columns} columns for {format_spec['name']}, found {actual_columns}"
+                    
+                    return result
                 
                 missing = [col for col in format_spec['required_columns'] if col not in df.columns]
                 extra = [col for col in df.columns if col not in format_spec['required_columns']]
@@ -268,11 +297,12 @@ class CSVParser:
             return pd.DataFrame()
     
     def detect_csv_format(self, csv_content: str) -> Optional[str]:
-        """Attempt to detect the CSV format based on column headers."""
+        """Attempt to detect the CSV format based on column headers or data patterns."""
         try:
             if not csv_content or not csv_content.strip():
                 return None
             
+            # First try with headers
             df = pd.read_csv(StringIO(csv_content))
             columns = set(df.columns)
             
@@ -283,11 +313,123 @@ class CSVParser:
                     self.logger.info(f"Detected CSV format: {format_spec['name']}")
                     return format_name
             
+            # If no format detected with headers, try detecting headerless formats
+            headerless_format = self._detect_headerless_format(csv_content)
+            if headerless_format:
+                return headerless_format
+            
             self.logger.warning(f"Unknown CSV format with columns: {list(columns)}")
             return None
         except Exception as e:
             self.logger.error(f"Failed to detect CSV format: {e}")
             return None
+    
+    def _detect_headerless_format(self, csv_content: str) -> Optional[str]:
+        """Detect CSV format for files without headers by analyzing data patterns."""
+        try:
+            lines = csv_content.strip().split('\n')
+            if len(lines) < 2:
+                return None
+            
+            # Analyze first few lines to detect patterns
+            first_line = lines[0].split(',')
+            
+            # Wells Fargo pattern: Date, Amount, Description (3 columns)
+            if len(first_line) == 3:
+                # Check if first column looks like a date
+                date_col = first_line[0].strip()
+                amount_col = first_line[1].strip()
+                
+                # Simple date pattern check (MM/DD/YYYY or similar)
+                if ('/' in date_col and len(date_col.split('/')) == 3) or ('-' in date_col and len(date_col.split('-')) == 3):
+                    # Check if second column looks like an amount
+                    try:
+                        float(amount_col)
+                        self.logger.info("Detected headerless Wells Fargo format")
+                        return 'wells_fargo_headerless'
+                    except ValueError:
+                        pass
+            
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to detect headerless format: {e}")
+            return None
+    
+    def _parse_headerless_csv(self, csv_content: str, format_spec: dict) -> List[Transaction]:
+        """Parse CSV content without headers using column indices."""
+        try:
+            # Read CSV without headers
+            df = pd.read_csv(StringIO(csv_content), header=None)
+            
+            transactions = []
+            column_mapping = format_spec['column_mapping']
+            date_format = format_spec['date_format']
+            
+            for index, row in df.iterrows():
+                try:
+                    # Parse dates using column indices
+                    transaction_date = self._parse_date_with_format(
+                        row[column_mapping['transaction_date']], date_format
+                    )
+                    
+                    if column_mapping['post_date'] is not None:
+                        post_date = self._parse_date_with_format(
+                            row[column_mapping['post_date']], date_format
+                        )
+                    else:
+                        post_date = transaction_date  # Use transaction date as post date
+                    
+                    # Parse amount using column index
+                    amount_value = row[column_mapping['amount']]
+                    if pd.isna(amount_value):
+                        continue
+                    
+                    try:
+                        # Handle different amount formats
+                        amount_str = str(amount_value).strip()
+                        # Remove currency symbols and commas
+                        amount_str = amount_str.replace('$', '').replace(',', '')
+                        amount = Decimal(amount_str)
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"Invalid amount in row {index + 1}: {amount_value}")
+                        continue
+                    
+                    # Get description using column index
+                    description = str(row[column_mapping['description']]).strip()
+                    if not description:
+                        description = "Unknown Transaction"
+                    
+                    # Set default category
+                    category = "Uncategorized"
+                    
+                    # Determine transaction type from amount
+                    transaction_type = "Payment" if amount > 0 else "Sale"
+                    
+                    # No memo for headerless format
+                    memo = None
+                    
+                    transaction = Transaction(
+                        transaction_date=transaction_date,
+                        post_date=post_date,
+                        description=description,
+                        category=category,
+                        transaction_type=transaction_type,
+                        amount=amount,
+                        memo=memo
+                    )
+                    
+                    transactions.append(transaction)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse headerless row {index + 1}: {e}")
+                    continue
+            
+            self.logger.info(f"Successfully parsed {len(transactions)} transactions from headerless {format_spec['name']} CSV")
+            return transactions
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse headerless CSV: {e}")
+            return []
     
     def get_supported_formats(self) -> dict:
         """Get information about all supported CSV formats."""
@@ -321,7 +463,11 @@ class CSVParser:
             
             format_spec = self.formats[format_type]
             
-            # Read CSV content
+            # Handle headerless formats
+            if format_spec.get('headerless', False):
+                return self._parse_headerless_csv(csv_content, format_spec)
+            
+            # Read CSV content with headers
             df = pd.read_csv(StringIO(csv_content))
             
             # Validate required columns
