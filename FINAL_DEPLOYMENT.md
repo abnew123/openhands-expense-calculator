@@ -143,7 +143,7 @@ openhands-expense-calculator/
 ├── Documentation                 # Complete documentation
 │   ├── README.md                # User guide
 │   ├── QUICK_START.md           # Quick setup
-│   ├── HANDOFF.md               # Technical handoff
+│   ├── FINAL_DEPLOYMENT.md      # Technical deployment guide
 │   ├── DOCKER_DEPLOYMENT.md     # Docker guide
 │   └── FINAL_DEPLOYMENT.md      # This file
 └── Configuration
@@ -226,7 +226,7 @@ CREATE INDEX idx_date_amount ON transactions(transaction_date, amount);
 - **User Guide**: README.md with comprehensive setup instructions
 - **Quick Start**: QUICK_START.md for immediate setup
 - **Docker Guide**: DOCKER_DEPLOYMENT.md for containerized deployment
-- **Technical Details**: HANDOFF.md for developers
+- **Technical Details**: FINAL_DEPLOYMENT.md for developers
 
 ### Troubleshooting
 - **Error Handling**: Built-in user-friendly error messages

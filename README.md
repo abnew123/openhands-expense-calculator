@@ -122,7 +122,7 @@ pip install -r requirements.txt
 - Try running: `python --version` to check your Python version
 
 ### Getting Help
-- Check the `HANDOFF.md` file for technical details
+- Check the `FINAL_DEPLOYMENT.md` file for technical details
 - Look at `expense_tracker.log` for error messages
 - Sample CSV files are included in the `supported_formats/` folder
 
@@ -265,7 +265,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 📞 Support
 
-- **Documentation**: Check [HANDOFF.md](HANDOFF.md) for technical details
+- **Documentation**: Check [FINAL_DEPLOYMENT.md](FINAL_DEPLOYMENT.md) for technical details
 - **Docker Issues**: See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md)
 - **Quick Start**: Follow [QUICK_START.md](QUICK_START.md) for setup help
 - **Issues**: Report bugs and feature requests on GitHub

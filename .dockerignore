@@ -54,9 +54,7 @@ htmlcov/
 
 # Documentation
 README.md
-HANDOFF.md
-COMPLETION_SUMMARY.md
-llm_notes/
+# Documentation files not needed in container
 
 # Test files
 tests/
