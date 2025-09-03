@@ -1,20 +1,20 @@
 # TICKET-012: Docker Containerization
 
-## Status: TODO
+## Status: COMPLETED ✅
 
 ## Description
 Create a Dockerfile that can build and run the expense tracker application in a container.
 
 ## Acceptance Criteria
-- [ ] Create Dockerfile with Python base image
-- [ ] Install all dependencies from requirements.txt
-- [ ] Configure proper working directory and file permissions
-- [ ] Expose correct port for Streamlit application
-- [ ] Ensure SQLite database persists with volume mounting
-- [ ] Add health check for container monitoring
-- [ ] Optimize image size and build time
-- [ ] Test container builds and runs successfully
-- [ ] Document container usage in README
+- [x] Create Dockerfile with Python base image
+- [x] Install all dependencies from requirements.txt
+- [x] Configure proper working directory and file permissions
+- [x] Expose correct port for Streamlit application
+- [x] Ensure SQLite database persists with volume mounting
+- [x] Add health check for container monitoring
+- [x] Optimize image size and build time
+- [x] Test container builds and runs successfully
+- [x] Document container usage in README
 
 ## Dependencies
 - TICKET-001 (Requirements.txt)
